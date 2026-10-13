@@ -81,6 +81,10 @@ __attribute__((constructor)) static void hd2tv_init(void)
         int fd = real_open("/mtd_rwarea/MAC_CHANGE", O_RDWR | O_CREAT, 0644);
         if (fd >= 0)
             real_close(fd);
+        /* no CI+ (no CAM, no credentials): its services database cannot
+         * be opened, so the CI+ storage stays off */
+        unlink("/mtd_rwarea/cip_services_database");
+        mkdir("/mtd_rwarea/cip_services_database", 0755);
     }
     hd2_devices_init();
     hd2_regs_init();

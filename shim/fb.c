@@ -36,7 +36,7 @@ static void *fb_thread(void *arg)
 {
     struct fb_var v;
     struct fb_fix f;
-    int fd, fps = 10, page = 0;
+    int fd, fps = 4, page = 0;
     uint8_t *fb;
     const uint32_t *src;
     const char *e;
@@ -64,6 +64,8 @@ static void *fb_thread(void *arg)
     hd2tv_log("fb: %ux%u %ubpp (virtual %u), plane %08x %ux%u",
               v.xres, v.yres, v.bits_per_pixel, v.yres_virtual, src_pa,
               src_w, src_h);
+    /* msm_fb reports 32 bpp for its RGB565 framebuffer: trust the line */
+    v.bits_per_pixel = f.line_length * 8 / v.xres;
     if (!src || (v.bits_per_pixel != 16 && v.bits_per_pixel != 32))
         return 0;
     hd2tv_log("fb: rgb offsets %u/%u/%u, line %u", v.red[0], v.green[0],
@@ -74,24 +76,27 @@ static void *fb_thread(void *arg)
     uint32_t ow = v.yres, oh = ow * src_h / src_w;  /* 800 x 450 */
     uint32_t x0 = (v.xres - oh) / 2;
     int pages = v.yres_virtual >= 2 * v.yres ? 2 : 1;
+    uint32_t *sxt = calloc(v.yres, 4), *syt = calloc(v.xres, 4);
+
+    for (uint32_t py = 0; py < v.yres; py++)
+        sxt[py] = py * src_w / ow;
+    for (uint32_t px = 0; px < v.xres; px++)
+        syt[px] = px >= x0 && px < x0 + oh ?
+                  (oh - 1 - (px - x0)) * src_h / oh * (src_stride / 4) : ~0u;
 
     for (;;) {
         uint8_t *dst = fb + (size_t)page * v.yres * f.line_length;
 
         for (uint32_t py = 0; py < v.yres; py++) {      /* along TV x */
-            uint32_t sx = py * src_w / ow;
+            const uint32_t *col = src + sxt[py];
             uint8_t *row = dst + py * f.line_length;
             for (uint32_t px = 0; px < v.xres; px++) {
-                uint32_t r = 0, g = 0, b = 0;
-                if (px >= x0 && px < x0 + oh) {
-                    /* panel x grows to the right = TV y from the bottom */
-                    uint32_t sy = (oh - 1 - (px - x0)) * src_h / oh;
-                    uint32_t c = src[sy * (src_stride / 4) + sx];
-                    uint32_t a = c >> 24;
-                    r = ((c >> 16) & 0xff) * a / 255;
-                    g = ((c >> 8) & 0xff) * a / 255;
-                    b = (c & 0xff) * a / 255;
-                }
+                uint32_t c = syt[px] == ~0u ? 0 : col[syt[px]];
+                /* premultiply by alpha (the OSD over a black video) */
+                uint32_t a = (c >> 24) + (c >> 31);     /* 0..256 */
+                uint32_t r = ((c >> 16) & 0xff) * a >> 8;
+                uint32_t g = ((c >> 8) & 0xff) * a >> 8;
+                uint32_t b = (c & 0xff) * a >> 8;
                 if (v.bits_per_pixel == 16)
                     ((uint16_t *)row)[px] = (r >> 3) << 11 | (g >> 2) << 5 | (b >> 3);
                 else

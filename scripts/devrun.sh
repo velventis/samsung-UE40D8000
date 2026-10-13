@@ -6,7 +6,9 @@ A="adb -s 127.0.0.1:${ADB_PORT:-5575}"
 scripts/adbc.sh || exit 1
 shim/build.sh >/dev/null || exit 1
 sed -e '/hd2noexe/d' -e 's|/mtd_exe/hd2/libhd2tv.so|/hd2/libhd2tv.so|' \
-    -e "1a export HD2TV_LOG=${HD2TV_LOG:-0x25}" overlay/exe/rc.local > work/run.sh
+    -e "1a export HD2TV_LOG=${HD2TV_LOG:-0x25}" \
+    -e 's|^\(HD2TV_LOG=.* \)\(LD_PRELOAD=.*\./exeDSP\)|touch /hd2/stdin; tail -f /hd2/stdin \| \1\2|' \
+    overlay/exe/rc.local > work/run.sh
 $A shell 'killall -9 exeDSP 2>/dev/null; sleep 1' 
 $A push shim/tools/memdump /hd2/memdump >/dev/null; $A shell chmod 755 /hd2/memdump
 $A push shim/libhd2tv.so /hd2/libhd2tv.so >/dev/null && $A push work/run.sh /hd2/run.sh >/dev/null || exit 1

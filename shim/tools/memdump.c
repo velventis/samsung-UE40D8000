@@ -29,6 +29,10 @@ __attribute__((used)) void cmain(long *sp)
     while (*p) path[i++] = *p++;
     for (p = "/mem"; *p; ) path[i++] = *p++;
     path[i] = 0;
+    long pid = num(argv[1]);
+    /* 2.6.32 lets only the tracer read /proc/PID/mem */
+    sc(26, 16, pid, 0, 0, 0, 0);                    /* PTRACE_ATTACH */
+    sc(114, pid, 0, 0x40000000, 0, 0, 0);           /* wait4 __WALL */
     long fd = sc(5, (long)path, 0, 0, 0, 0, 0);
     while (len > 0 && fd >= 0) {
         unsigned long n = len > sizeof(buf) ? sizeof(buf) : len;
@@ -38,6 +42,7 @@ __attribute__((used)) void cmain(long *sp)
         sc(4, 1, (long)buf, r, 0, 0, 0);
         addr += r; len -= r;
     }
+    sc(26, 17, pid, 0, 0, 0, 0);                    /* PTRACE_DETACH */
     sc(1, 0, 0, 0, 0, 0, 0);
 }
 __asm__(".globl _start\n_start:\n mov r0, sp\n bl cmain\n");
