@@ -1,0 +1,16 @@
+# Samsung firmware (download, decrypted and unpacked) and build outputs
+/dl/
+/dec/
+/extract/
+/sq_*/
+/work/
+/out/
+/run/
+/bin/
+/re/
+/kbuild/
+# the HD2 kernel is a worktree of ~/clones/hd2-qemu/src/kernel-ics (branch samsung-tv)
+/kernel/
+/tools/squashfs-tools/
+/tools/SamyGO_Firmware_Patcher/
+/tools/samygo-patcher/
