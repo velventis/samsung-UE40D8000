@@ -64,7 +64,10 @@ cd /mtd_exe/
 
 insmod samdrv.ko
 #LD_DEBUG=statistics LD_BIND_NOW=t /mtd_exe/exeDSP 
-LD_PRELOAD=/mtd_exe/hd2/libhd2tv.so ./exeDSP
+# HD2: "hd2noexe" on the kernel command line leaves the TV app off
+grep -q hd2noexe /proc/cmdline && exit 0
+mkdir -p /hd2/log
+HD2TV_LOG=${HD2TV_LOG:-5} LD_PRELOAD=/mtd_exe/hd2/libhd2tv.so ./exeDSP > /hd2/log/exedsp.log 2>&1
 
 
 

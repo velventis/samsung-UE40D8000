@@ -108,3 +108,15 @@ int sigaction(int, const struct sigaction *, struct sigaction *);
 int raise(int);
 void _exit(int);
 long gettid_(void);
+extern FILE *stdout;
+int setvbuf(FILE *, char *, int, size_t);
+#define _IOLBF 1
+int kill(pid_t, int);
+void exit(int);
+int tgkill_(int, int, int);
+ssize_t readlink(const char *, char *, size_t);
+void hd2tv_where(const char *what, uint32_t a);
+int msgctl(int, int, void *);
+int semctl(int, int, int, ...);
+int shmctl(int, int, void *);
+#define IPC_RMID 0

@@ -12,7 +12,8 @@ rm -f qmp.sock console.sock ramcon.log qemu.log uart1.log
   -serial chardev:con -serial file:ramcon.log \
   -qmp unix:qmp.sock,server,nowait -d ${QEMU_D:-guest_errors} -D qemu.log \
   -audiodev none,id=snd0 -global msm-modem.audiodev=snd0 \
-  -nic user,model=bcm4329 "$@" > qemu.out 2>&1 &
+  -nic user,model=bcm4329 \
+  -chardev socket,id=adb,host=127.0.0.1,port=${ADB_PORT:-5575},server=on,wait=off -global msm-hsusb.adb=adb "$@" > qemu.out 2>&1 &
 echo $! > qemu.pid
 for i in $(seq 20); do [ -S qmp.sock ] && break; sleep 0.3; done
 sleep 2.5

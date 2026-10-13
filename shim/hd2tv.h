@@ -26,3 +26,6 @@ void hd2_devices_init(void);
 extern const struct hd2_dev hd2_dev_i2c, hd2_dev_m_i2c, hd2_dev_gpio;
 void hd2tv_gpio_set_input(int port, int bit, int val);
 void hd2tv_crash_init(void);
+uint32_t hd2tv_memcfg(unsigned id);
+void hd2_regs_init(void);
+void hd2_ipc_clean(void);

@@ -17,3 +17,13 @@ mount -t tmpfs none /tmp -o size=300M,mode=1777
 echo samsung-tv > /sys/power/wake_lock
 # the TV SoC's physical memory for libhd2tv.so (/dev/mem emulation)
 mount -t tmpfs none /hd2 -o size=256M,mode=1777
+
+# HD2: a writable /dev (the HD2 kernel's adb gadget, ptys) and adbd
+mkdir -p /hd2/dev && cp -a /dev/. /hd2/dev/ && mount -o bind /hd2/dev /dev
+mount -t tmpfs none /dev/sam -o size=1K,mode=1777
+mkdir -p /dev/pts && mount -t devpts devpts /dev/pts
+for m in android_adb android_adb_enable; do
+    [ -f /sys/class/misc/$m/dev ] && mknod /dev/$m c 10 $(cut -d: -f2 /sys/class/misc/$m/dev)
+done
+chmod 666 /dev/ptmx
+

@@ -34,7 +34,8 @@ ZIMAGE = os.path.join(TOP, 'kbuild/arch/arm/boot/zImage')
 
 # HD2 MTD order from cLK 1.4: misc recovery sboot boot system cache userdata
 CMDLINE = ('x=/dev/tfsr6 root=/dev/mtdblock4 rootfstype=squashfs ro '
-           'console=ttyMSM0,115200n8 init=/sbin/init')
+           'console=ttyMSM0,115200n8 init=/sbin/init' +
+           (' ' + os.environ['CMDLINE_EXTRA'] if os.environ.get('CMDLINE_EXTRA') else ''))
 
 # rootfs device nodes that change: (major, minor)
 DEV_REMAP = {

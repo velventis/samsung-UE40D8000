@@ -1,0 +1,7 @@
+ttyS2::sysinit:/etc/rc.local
+ttyS2::respawn:-/bin/sh
+# HD2: adb over the HD2 USB port
+::respawn:/sbin/adbd
+::restart:/sbin/init
+::ctrlaltdel:/bin/umount -a -r
+

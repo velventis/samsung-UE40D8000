@@ -21,7 +21,7 @@ static void *(*real_mmap64)(void *, size_t, int, int, int, off64_t);
 static ssize_t (*real_read)(int, void *, size_t);
 static ssize_t (*real_write)(int, const void *, size_t);
 
-unsigned hd2tv_log_mask = 5;
+unsigned hd2tv_log_mask = 5 | 32;
 static int phys_fd = -1;             /* backing store of /dev/mem */
 
 #define MAX_FD 1024
@@ -71,8 +71,11 @@ __attribute__((constructor)) static void hd2tv_init(void)
     if (phys_fd < 0 || ftruncate64(phys_fd, 0x100000000ll - 0x1000) < 0)
         hd2tv_log("cannot create %s", HD2TV_PHYS_FILE);
     unlink(HD2TV_PHYS_FILE);
+    setvbuf(stdout, 0, _IOLBF, 0);
     hd2tv_log("loaded, pid %d", getpid());
+    hd2_ipc_clean();
     hd2_devices_init();
+    hd2_regs_init();
     hd2tv_crash_init();
 }
 
@@ -106,7 +109,7 @@ static int open_common(const char *path, int flags, mode_t mode, bool is64)
         fake[fd] = d;
         fake_unit[fd] = unit;
     }
-    if (hd2tv_log_mask & 1)
+    if ((hd2tv_log_mask & 1) && d != &hd2_dev_gpio && d != &hd2_dev_i2c)
         hd2tv_log("open %s -> %d", path, fd);
     if (d->open)
         d->open(unit);
@@ -242,7 +245,26 @@ ssize_t read(int fd, void *buf, size_t n)
         for (;;)
             sleep(3600);
     }
-    return real_read(fd, buf, n);
+    ssize_t r = real_read(fd, buf, n);
+    if (r <= 0) {
+        /* who polls a dead fd? (once per caller) */
+        static void *seen[16];
+        void *c = __builtin_return_address(0);
+        int i;
+        for (i = 0; i < 16 && seen[i] && seen[i] != c; i++)
+            ;
+        if (i < 16 && !seen[i]) {
+            char p[32], l[128];
+            int k;
+            seen[i] = c;
+            snprintf(p, sizeof(p), "/proc/self/fd/%d", fd);
+            k = readlink(p, l, sizeof(l) - 1);
+            l[k > 0 ? k : 0] = 0;
+            hd2tv_log("read(%d %s) = %d from %p", fd, l, (int)r, c);
+            hd2tv_where("caller", (uint32_t)c);
+        }
+    }
+    return r;
 }
 
 ssize_t write(int fd, const void *buf, size_t n)

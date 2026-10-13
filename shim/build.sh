@@ -1,6 +1,7 @@
 #!/bin/sh
 # build libhd2tv.so against the TV's glibc 2.11 (ARMv7 EABI, softfp)
 set -e
+export TMPDIR=$(cd "$(dirname "$0")/.." && pwd)/work/tmp; mkdir -p $TMPDIR
 cd "$(dirname "$0")"
 L=../work/exe/lib
 clang --target=armv7a-linux-gnueabi -mfloat-abi=softfp -mfpu=vfpv3 -marm \
@@ -11,3 +12,6 @@ clang --target=armv7a-linux-gnueabi -mfloat-abi=softfp -mfpu=vfpv3 -marm \
 mkdir -p ../overlay/exe/hd2
 cp libhd2tv.so ../overlay/exe/hd2/
 echo built libhd2tv.so
+clang --target=armv7a-linux-gnueabi -marm -O2 -static -nostdlib -ffreestanding \
+  -fno-stack-protector -fuse-ld=lld -o tools/hd2daemon tools/hd2daemon.c
+cp tools/hd2daemon ../overlay/rootfs/sbin/

@@ -82,7 +82,7 @@ static int i2c_ioctl(int unit, unsigned long req, void *arg)
     uint32_t a;
 
     pthread_mutex_lock(&i2c_lock);
-    s = slave_get(0, t->slave & 0xfe);
+    s = slave_get(unit, t->slave & 0xfe);
     a = s->ptr;
     switch (req) {
     case 1:                     /* write, the subaddress first */
@@ -105,7 +105,7 @@ static int i2c_ioctl(int unit, unsigned long req, void *arg)
         hd2tv_log("i2c ioctl 0x%lx?", req);
     }
     if (hd2tv_log_mask & 8)
-        hd2tv_log("i2c %lx %02x @%x len %d [%02x %02x]", req, t->slave, a, t->len, t->len ? t->data[0] : 0,
+        hd2tv_log("i2c %lx %d:%02x @%x len %d [%02x %02x]", req, unit, t->slave, a, t->len, t->len ? t->data[0] : 0,
                   t->len > 1 ? t->data[1] : 0);
     pthread_mutex_unlock(&i2c_lock);
     return 0;
