@@ -54,10 +54,11 @@ int hd2_ae_ioctl(int unit, unsigned long req, void *arg)
     struct sam_arg *a = arg;
     uint32_t *p = a->buf;
     struct ae_buf *b = a->buf;
-    unsigned idx = p ? p[0] : 0;
+#define idx (p[0])
 
     switch (req) {
     case 0x70:                  /* IrqRead: waits for the audio DSP */
+    case 0xa7:                  /* GetPcmDumpEvent: likewise */
         for (;;)
             sleep(3600);
     case 0x68:                  /* Init { index, config, *handle } */
@@ -88,6 +89,7 @@ int hd2_ae_ioctl(int unit, unsigned long req, void *arg)
         *(uint32_t *)(uintptr_t)p[1] = ae_mem(idx);
         break;
     }
+#undef idx
     if (a)
         a->ret = 0;
     return 0;

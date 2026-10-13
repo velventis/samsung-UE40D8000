@@ -62,6 +62,8 @@ __attribute__((constructor)) static void hd2tv_init(void)
     const char *e;
 
     init_real();
+    /* only exeDSP itself: not the shells and tools it starts */
+    unsetenv("LD_PRELOAD");
     e = getenv("HD2TV_LOG");
     if (e)
         hd2tv_log_mask = strtoul(e, 0, 0);
@@ -74,9 +76,16 @@ __attribute__((constructor)) static void hd2tv_init(void)
     setvbuf(stdout, 0, _IOLBF, 0);
     hd2tv_log("loaded, pid %d", getpid());
     hd2_ipc_clean();
+    {
+        /* the factory MAC change is done (no MICOM to go through) */
+        int fd = real_open("/mtd_rwarea/MAC_CHANGE", O_RDWR | O_CREAT, 0644);
+        if (fd >= 0)
+            real_close(fd);
+    }
     hd2_devices_init();
     hd2_regs_init();
     hd2tv_crash_init();
+    hd2_fb_init();
 }
 
 void *hd2tv_phys(uint32_t pa, uint32_t len)

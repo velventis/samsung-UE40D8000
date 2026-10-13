@@ -170,9 +170,23 @@ def build_sd():
         script.append('start=%d, size=%d, type=%s' % (lba, mb * 2048, t))
         lba += mb * 2048 + 2048
     total = lba
+    sig = path + '.layout'
+    layout = '\n'.join(script)
+    if (os.environ.get('SD_FRESH') != '1' and os.path.exists(path) and
+            os.path.exists(sig) and open(sig).read() == layout):
+        # same layout: only the squashfs partitions change, the FAT ones
+        # (the TV's settings, the EEPROM files) are kept
+        for num, mb, content in sizes:
+            if content != 'fat':
+                run('dd', 'if=' + os.path.join(TOP, content), 'of=' + path,
+                    'bs=1M', 'conv=notrunc', 'oflag=seek_bytes',
+                    'seek=%d' % (starts[num] * 512), 'status=none')
+                print('  p%-2d %4d MiB %s (updated)' % (num, mb, content))
+        return
     with open(path, 'wb') as f:
         f.truncate(total * 512)
     run('sfdisk', '-q', path, input='\n'.join(script) + '\n', text=True)
+    open(sig, 'w').write(layout)
     tmp = os.path.join(WORK, 'part.img')
     for num, mb, content in sizes:
         if content == 'fat':

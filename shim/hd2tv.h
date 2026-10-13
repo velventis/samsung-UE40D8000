@@ -29,3 +29,4 @@ void hd2tv_crash_init(void);
 uint32_t hd2tv_memcfg(unsigned id);
 void hd2_regs_init(void);
 void hd2_ipc_clean(void);
+void hd2_fb_init(void);

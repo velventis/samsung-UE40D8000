@@ -120,3 +120,4 @@ int msgctl(int, int, void *);
 int semctl(int, int, int, ...);
 int shmctl(int, int, void *);
 #define IPC_RMID 0
+int unsetenv(const char *);
