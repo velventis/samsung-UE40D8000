@@ -1,0 +1,70 @@
+#!/bin/sh
+
+#Run FastLogo 
+source /mtd_exe/Fastlogo.sh
+
+
+export MAPLE_DEFAULT_PATH=/mtd_cmmlib/InfoLink/lib
+export MAPLE_MANAGER_WIDGET_PATH=/mtd_down/widgets/manager
+export MAPLE_NORMAL_WIDGET_PATH=/mtd_down/widgets/normal
+export MAPLE_DUMMY_WIDGET_PATH=/mtd_appdata/SmartTV
+export MAPLE_WIDGET_DATA_PATH=/mtd_down
+export MAPLE_WIDGET_INCLUDE_PATH=/mtd_down/widgets/inc
+export MAPLE_PLUGIN_DATA_PATH=/mtd_cmmlib/InfoLink/lib:/mtd_cmmlib/OIPF
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/mtd_cmmlib/Comp_LIB:/mtd_exe/lib:/mtd_cmmlib/YWidget_LIB:/mtd_contents:/mtd_cmmlib/InfoLink/lib/plugin/Static:/mtd_appdata/moip:/mtd_cmmlib/GAME_LIB:/mtd_appdata/gemstar:/mtd_cmmlib/DRM_LIB:/Java/lib:/mtd_cmmlib/InfoLink/lib:/dtv:/mtd_cmmlib/lib:/mtd_cmmlib/OIPF:/mtd_appext/Webkit
+
+export HOME=/mtd_moip
+export KF_SLEEP_READ=-2
+echo 30000 > /mtd_rwarea/DelayValue.txt
+#touch /mtd_rwarea/DoPrintYahoo.txt
+export KF_NO_INTERACTIVE=1
+export KF_LOG=/dev/null #Remove engine logging.
+export KF_NO_LOG=1
+export KF_NO_CRASHHANDLERS=1
+export KF_HF_WRITE_PATH=/mtd_rwarea/yahoo
+export KF_DATA_DIR=/mtd_yahoo/yahoo
+export KF_THREAD_PRIORITY=0
+export KF_CURL_PRIORITY=high
+
+#====================================
+# For Webkit Browser
+export MOZ_PLUGIN_PATH=/mtd_down/webkit/plugins
+#====================================
+
+#====================================
+# For XServer
+export  XVT_DEFAULT="/dev/sam/tty0"
+export  XVT_RUNTIME="/dev/sam/tty%d"
+
+mknod /dev/sam/tty0 c 4 0
+mknod /dev/sam/tty1 c 4 1
+mknod /dev/sam/tty2 c 4 2
+mknod /dev/sam/tty3 c 4 2
+export DISPLAY=:0
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/mtd_appdata/Runtime/lib/CairoShadow:/mtd_appdata/Runtime/lib:/mtd_appdata/Runtime/XorgLibs
+export FONTCONFIG_PATH=/mtd_appdata/Runtime/fonts
+export FONTCONFIG_FILE=/mtd_rocommon/FullBrowser/fonts/fonts.conf
+export PANGO_RC_FILE=/mtd_appdata/Runtime/pango/pangorc
+export GTK_PATH=/mtd_appdata/Runtime/lib/gtk-2.0
+export PATH=$PATH:/mtd_appdata/Runtime/bin
+#====================================
+
+#============================================================================
+#for_yahoo_release(YAHOO)
+#export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/mtd_down/widget:/mtd_down/widget/lib
+#touch /mtd_rwarea/rc.local
+#source /mtd_rwarea/rc.local
+ 
+#for_samsung_release(YAHOO)
+export KF_RESTART_INTERVAL=3
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/mtd_appdata/yahoo:/mtd_appdata/yahoo/lib
+#===========================================================================
+
+cd /mtd_exe/
+
+insmod samdrv.ko
+#LD_DEBUG=statistics LD_BIND_NOW=t /mtd_exe/exeDSP 
+LD_PRELOAD=/mtd_exe/hd2/libhd2tv.so ./exeDSP
+
+
+

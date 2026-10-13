@@ -15,3 +15,5 @@ mount -t tmpfs none /tmp -o size=300M,mode=1777
 
 # HD2: the Android kernel suspends when no wakelock is held
 echo samsung-tv > /sys/power/wake_lock
+# the TV SoC's physical memory for libhd2tv.so (/dev/mem emulation)
+mount -t tmpfs none /hd2 -o size=256M,mode=1777
