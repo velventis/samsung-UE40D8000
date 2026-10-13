@@ -12,6 +12,7 @@ sed -e '/hd2noexe/d' -e 's|/mtd_exe/hd2/libhd2tv.so|/hd2/libhd2tv.so|' \
 $A shell 'killall -9 exeDSP 2>/dev/null; sleep 1' 
 $A push shim/tools/memdump /hd2/memdump >/dev/null; $A shell chmod 755 /hd2/memdump
 $A push overlay/exe/hd2/font.ttf /hd2/font.ttf >/dev/null
+$A push shim/hd2gl/hd2gl /hd2/android/hd2gl >/dev/null 2>&1 && $A shell chmod 755 /hd2/android/hd2gl
 $A push shim/libhd2tv.so /hd2/libhd2tv.so >/dev/null && $A push work/run.sh /hd2/run.sh >/dev/null || exit 1
 $A shell 'mkdir -p /hd2/log; chmod 755 /hd2/run.sh; cd /mtd_exe; /sbin/hd2daemon /bin/sh -c "sh -x /hd2/run.sh > /hd2/log/run.out 2>&1"; sleep 2'
 sleep ${WAIT:-20}

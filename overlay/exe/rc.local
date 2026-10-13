@@ -64,6 +64,8 @@ cd /mtd_exe/
 
 insmod samdrv.ko
 #LD_DEBUG=statistics LD_BIND_NOW=t /mtd_exe/exeDSP 
+# HD2: the Adreno 200 for exeDSP's GL (see hd2/android.sh)
+sh /mtd_exe/hd2/android.sh
 # HD2: "hd2noexe" on the kernel command line leaves the TV app off
 grep -q hd2noexe /proc/cmdline && exit 0
 mkdir -p /hd2/log

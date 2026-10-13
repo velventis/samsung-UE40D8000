@@ -18,3 +18,9 @@ cp tools/hd2daemon ../overlay/rootfs/sbin/
 clang --target=armv7a-linux-gnueabi -marm -O2 -static -nostdlib -ffreestanding \
   -fno-stack-protector -fuse-ld=lld -o tools/memdump tools/memdump.c
 cp tools/memdump ../overlay/rootfs/sbin/
+# hd2gl: Android (bionic) against the HD2 ROM's Adreno EGL/GLES2, NDK r23
+NDK=${NDK:-$HOME/Android/Sdk/ndk/23.1.7779620}
+ROM=${HD2_ROM:-$HOME/clones/hd2-qemu/firmware/rom/system}
+$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi16-clang \
+  -O2 -Wall -fno-pie -no-pie -Wl,--hash-style=sysv -o hd2gl/hd2gl hd2gl/hd2gl.c \
+  -L$ROM/lib/egl -l:libEGL_adreno200.so -l:libGLESv2_adreno200.so

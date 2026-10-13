@@ -196,6 +196,23 @@ static void ga_rop(uint32_t *b, uint32_t back)
     rect_unmap(&d);
 }
 
+/* the GA and GL (gl.c) share memory: what GL drew is written back before
+ * a GA operation, and what the GA wrote is loaded again before GL uses it.
+ * Called with the gfx lock released: GL sync is a round trip to hd2gl. */
+static void ga_sync(void)
+{
+    pthread_mutex_unlock(&lock);
+    hd2tv_gl_sync();
+    pthread_mutex_lock(&lock);
+}
+
+static void ga_wrote(uint32_t pa, uint32_t pitch, uint32_t x, uint32_t y,
+                     uint32_t w, uint32_t h)
+{
+    if (pa && w && h)
+        hd2tv_gl_dirty(pa + y * pitch + x * 4, (h - 1) * pitch + w * 4);
+}
+
 /* show what was drawn: copy the back buffer's rect to the front buffer */
 static void osd_update(struct plane *s, uint32_t x, uint32_t y, uint32_t w, uint32_t h)
 {
@@ -324,9 +341,9 @@ int hd2_gfx_ioctl(int unit, unsigned long req, void *arg)
         if (sample(req)) logw(req == 0x4764 ? "UpdateOsd" : "UpdateOsd_Toggle", p, io, 4);
         osd_update(s, io[0], io[1], io[2], io[3]);
         break;
-    case 0x4765: case 0x4768:                           /* { src rect, dst rect } */
+    case 0x4765: case 0x4768:                           /* { rect, ... } */
         if (sample(req)) logw(req == 0x4765 ? "UpdateOsd_full" : "UpdateOsd_Toggle_full", p, io, 8);
-        osd_update(s, io[4], io[5], io[6], io[7]);
+        osd_update(s, io[0], io[1], io[2], io[3]);
         break;
     case 0x4767:
         if (sample(req)) logw("UpdateOsd_Toggle_new", p, io, 9);
@@ -334,15 +351,21 @@ int hd2_gfx_ioctl(int unit, unsigned long req, void *arg)
         break;
     case 0x476e:
         if (sample(req)) logw("FillRect", p, io, 8);
+        ga_sync();
         ga_fill(io);
+        ga_wrote(io[0], io[1], io[3], io[4], io[5], io[6]);
         break;
     case 0x476f:
         if (sample(req)) logw("BltROP", p, io, 21);
+        ga_sync();
         ga_rop(io, s->back);
+        ga_wrote(io[8], io[9], io[10], io[11], io[6], io[7]);
         break;
     case 0x4770:
         if (sample(req)) logw("BltCopy", p, io, 11);
+        ga_sync();
         ga_copy(io);
+        ga_wrote(io[7], io[8], io[9], io[10], io[5], io[6]);
         break;
     case 0x4771: if (sample(req)) logw("BltBackBuffer", p, io, 6); break;
     case 0x4778: if (sample(req)) logw("GSCL_Scale", p, io, 9); break;

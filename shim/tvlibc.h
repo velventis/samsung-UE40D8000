@@ -52,6 +52,7 @@ int ftruncate64(int, off64_t);
 int unlink(const char *);
 int dup(int);
 int pipe(int[2]);
+pid_t fork(void);
 int usleep(unsigned);
 unsigned sleep(unsigned);
 pid_t getpid(void);

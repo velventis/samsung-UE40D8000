@@ -61,12 +61,18 @@ static void *fb_thread(void *arg)
         fps = atoi(e) > 0 ? atoi(e) : 4;
     hd2tv_log("fb: %ux%u %ubpp (virtual %u)", v.xres, v.yres, v.bits_per_pixel,
               v.yres_virtual);
-    /* msm_fb reports 32 bpp for its RGB565 framebuffer: trust the line */
-    v.bits_per_pixel = f.line_length * 8 / v.xres;
     if (v.bits_per_pixel != 16 && v.bits_per_pixel != 32)
         return 0;
-    hd2tv_log("fb: rgb offsets %u/%u/%u, line %u", v.red[0], v.green[0],
-              v.blue[0], f.line_length);
+    /* msm_fb pans to (xres * yoffset) * bytes per pixel, but sets up
+     * line_length and the colour offsets for RGB565 even at 32 bpp, where
+     * the MDP reads bytes R, G, B, X */
+    f.line_length = v.xres * v.bits_per_pixel / 8;
+    if (v.bits_per_pixel == 32) {
+        v.red[0] = 0;
+        v.green[0] = 8;
+        v.blue[0] = 16;
+        v.transp[0] = 24;
+    }
 
     /* landscape TV on the portrait panel: rotated 90 degrees clockwise,
      * the TV's width along the panel's height */
@@ -90,6 +96,17 @@ static void *fb_thread(void *arg)
 
         for (int i = 0; i < n; i++)
             map[i] = hd2tv_phys(pl[i].pa, pl[i].stride * pl[i].h);
+        if (hd2tv_log_mask & 0x80) {            /* what is shown, each 10 s */
+            static int frame;
+            if (frame++ % (10 * fps) == 0)
+                for (int i = 0; i < n; i++) {
+                    uint32_t vis = 0;
+                    for (uint32_t k = 0; map[i] && k < pl[i].stride / 4 * pl[i].h; k++)
+                        vis += ((const uint32_t *)map[i])[k] >> 24 != 0;
+                    hd2tv_log("fb: plane %08x %ux%u, %u visible pixels",
+                              pl[i].pa, pl[i].w, pl[i].h, vis);
+                }
+        }
         for (uint32_t py = 0; py < v.yres; py++) {      /* along TV x */
             uint8_t *row = dst + py * f.line_length;
 

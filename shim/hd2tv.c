@@ -28,6 +28,47 @@ static int phys_fd = -1;             /* backing store of /dev/mem */
 #define MAX_FD 1024
 static const struct hd2_dev *fake[MAX_FD];
 static int fake_unit[MAX_FD];
+static bool is_phys[MAX_FD];        /* a dup of phys_fd (/dev/mem) */
+
+/* exeDSP's mappings of the TV's memory, for hd2tv_va2phys */
+static struct { uintptr_t va; uint32_t len; uint64_t pa; } maps[512];
+static int nmaps;
+static pthread_mutex_t maps_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void map_note(void *va, size_t len, uint64_t pa)
+{
+    pthread_mutex_lock(&maps_lock);
+    int i;
+    for (i = 0; i < nmaps && maps[i].va != (uintptr_t)va; i++)
+        ;
+    if (i == nmaps && nmaps < 512)
+        nmaps++;
+    if (i < 512) {
+        maps[i].va = (uintptr_t)va;
+        maps[i].len = len;
+        maps[i].pa = pa;
+    }
+    pthread_mutex_unlock(&maps_lock);
+}
+
+/* the TV physical address of exeDSP's virtual address va, or ~0 */
+uint64_t hd2tv_va2phys(const void *va)
+{
+    uint64_t pa = ~0ull;
+    pthread_mutex_lock(&maps_lock);
+    for (int i = nmaps - 1; i >= 0; i--)
+        if ((uintptr_t)va >= maps[i].va && (uintptr_t)va - maps[i].va < maps[i].len) {
+            pa = maps[i].pa + ((uintptr_t)va - maps[i].va);
+            break;
+        }
+    pthread_mutex_unlock(&maps_lock);
+    return pa;
+}
+
+int hd2tv_phys_fd(void)
+{
+    return phys_fd;
+}
 
 void hd2tv_log(const char *fmt, ...)
 {
@@ -113,6 +154,8 @@ static int open_common(const char *path, int flags, mode_t mode, bool is64)
     path = hd2_image_path(path, img_buf, sizeof(img_buf));
     if (path && !strcmp(path, "/dev/mem")) {
         fd = dup(phys_fd);
+        if (fd >= 0 && fd < MAX_FD)
+            is_phys[fd] = true;
         if (hd2tv_log_mask & 1)
             hd2tv_log("open /dev/mem -> %d", fd);
         return fd;
@@ -181,8 +224,10 @@ int open64(const char *path, int flags, ...)
 int close(int fd)
 {
     init_real();
-    if (fd >= 0 && fd < MAX_FD)
+    if (fd >= 0 && fd < MAX_FD) {
         fake[fd] = 0;
+        is_phys[fd] = false;
+    }
     return real_close(fd);
 }
 
@@ -253,9 +298,13 @@ static void *mmap_common(void *addr, size_t len, int prot, int flags, int fd,
         if (hd2tv_log_mask & 4)
             hd2tv_log("mmap %s%d off 0x%llx len 0x%x -> pa 0x%llx %p",
                       d->name, fake_unit[fd], off, len, pa, p);
+        if (p != MAP_FAILED)
+            map_note(p, len, pa);
         return p;
     }
     p = real_mmap64(addr, len, prot, flags, fd, off);
+    if (p != MAP_FAILED && fd >= 0 && fd < MAX_FD && is_phys[fd])
+        map_note(p, len, off);
     if ((hd2tv_log_mask & 4) && off >= 0x10000000)
         hd2tv_log("mmap fd %d off 0x%llx len 0x%x -> %p", fd, off, len, p);
     return p;

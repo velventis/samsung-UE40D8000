@@ -33,6 +33,7 @@ WORK = os.path.join(TOP, 'work')
 OUT = os.path.join(TOP, 'out')
 OVERLAY = os.path.join(TOP, 'overlay')
 LK = os.path.join(HD2, 'firmware/lk-user.bin')
+ROM = os.environ.get('HD2_ROM', os.path.join(HD2, 'firmware/rom/system'))
 ZIMAGE = os.path.join(TOP, 'kbuild/arch/arm/boot/zImage')
 
 # HD2 MTD order from cLK 1.4: misc recovery sboot boot system cache userdata
@@ -108,10 +109,41 @@ def build_rootfs():
     mksquash(dst, os.path.join(OUT, 'rootfs.img'), nodes)
 
 
+def add_android(dst):
+    """hd2/android/system: what hd2gl (the TV's GL on the Adreno 200) needs
+    from the HD2 ROM: bionic's linker, the Adreno EGL/GLES2 with what they
+    link, and KGSL's firmware"""
+    sysd = os.path.join(dst, 'hd2/android/system')
+    shutil.rmtree(sysd, ignore_errors=True)
+    files = {'bin/linker', 'etc/firmware/yamato_pm4.fw', 'etc/firmware/yamato_pfp.fw'}
+    todo = ['lib/egl/libEGL_adreno200.so', 'lib/egl/libGLESv2_adreno200.so',
+            'lib/egl/eglsubAndroid.so', 'lib/libsc-a2xx.so']
+    while todo:
+        f = todo.pop()
+        if f in files:
+            continue
+        files.add(f)
+        out = subprocess.run(['llvm-readelf', '-d', os.path.join(ROM, f)],
+                             check=True, capture_output=True, text=True).stdout
+        for n in re.findall(r'\(NEEDED\).*\[(.*)\]', out):
+            for d in ('lib/', 'lib/egl/'):
+                if os.path.exists(os.path.join(ROM, d + n)):
+                    todo.append(d + n)
+                    break
+    for f in sorted(files):
+        os.makedirs(os.path.join(sysd, os.path.dirname(f)), exist_ok=True)
+        shutil.copyfile(os.path.join(ROM, f), os.path.join(sysd, f))
+        os.chmod(os.path.join(sysd, f), 0o755 if f.startswith('bin/') else 0o644)
+    shutil.copyfile(os.path.join(TOP, 'shim/hd2gl/hd2gl'), os.path.join(sysd, 'bin/hd2gl'))
+    os.chmod(os.path.join(sysd, 'bin/hd2gl'), 0o755)
+    print('exe: %d files from the HD2 ROM, and hd2gl' % len(files))
+
+
 def build_exe():
     dst = os.path.join(WORK, 'exe')
     nodes = unsquash(os.path.join(TOP, 'dec/exe.img'), dst)
     apply_overlay('exe', dst)
+    add_android(dst)
     mksquash(dst, os.path.join(OUT, 'exe.img'), nodes)
 
 

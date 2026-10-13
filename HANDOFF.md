@@ -239,10 +239,28 @@ address. That covers:
 - **UARTs:** `/dev/ttyS1` (MICOM) and `/dev/ttyS3` (debug) get the slave
   side of a pty. On the MICOM's, `micom.c` acks each command (`ff ff cmd
   p0..p4 sum`, echoed back), except the codes the TV parses as MICOM events.
+- **GL, on the HD2's Adreno 200** (`gl.c`, `hd2gl/`): exeDSP's UI composes
+  with GLES2 (`Shadow::GLRenderer`) into EGL pixmap surfaces (Mali
+  `fbdev_pixmap`s over its screen buffers in GA memory), with GA surfaces as
+  textures through EGLImages. `gl.c` provides EGL/GLES2 and forwards the calls
+  (batched, names allocated locally; `glproto.h`) to `hd2gl`, an Android
+  program on the HD2 ROM's Adreno driver, run in a chroot (`/hd2/android`, set
+  up by `hd2/android.sh` from rc.local; KGSL's firmware comes through the
+  kernel hotplug helper `hd2/hotplug.sh`).
+  - The TV's two shader programs are Mali binaries (`CCGfx::m_InitializeShader`);
+    `hd2gl` runs GLSL versions: 2D (textured quads, `alphaConstant`) and the 3D
+    panel shader without its lights, fog, depth of field and deforms.
+  - Surfaces are FBOs; what is drawn is read back into TV memory at sync points
+    (glFinish, eglWaitGL, eglMakeCurrent, before each GA op). Textures from TV
+    memory reload when the GA writes there or their contents change.
+  - Colours stay B, G, R, A in GL's R, G, B, A channels, like the TV's memory.
+  - `mkimages.py` copies the ROM files it needs (`HD2_ROM`, default
+    `~/clones/hd2-qemu/firmware/rom/system`) into the exe image under
+    `hd2/android/system`; `shim/build.sh` builds `hd2gl` with NDK r23.
 - **Display** (`fb.c`):
   - A thread composites the planes that are on (`hd2tv_gfx_planes`: gfx2, gfx1, then gfx0 on top) over black to `/dev/fb0`.
   - The image is rotated 90° and scaled to 800×450 on the portrait panel, at 4 fps.
-  - `msm_fb` reports 32 bpp but is RGB565 (960-byte lines), so the pixel size comes from `line_length`.
+  - `msm_fb` is 32 bpp (the MDP reads bytes R, G, B, X; pages of 480×800×4), but reports a 960-byte `line_length` and RGB565 colour offsets: the shim ignores both.
   - Override the plane with `HD2TV_PLANE=pa,w,h,stride`.
 - **Startup housekeeping:**
   - Removes stale SysV IPC objects, which `exeDSP` leaks when killed. Without this, `msgget` returns ENOSPC.
@@ -264,17 +282,15 @@ address. That covers:
 - `main()` → `Main()` → `TCMW::Initialize()` runs to the end ("TCMW::Initialize() end" in the log). The CI+ manager's wait on the crypto engine (SE) DMA semaphore has no timeout; the shim's SE completion events (see `se` above) get it past.
 - `APP_INITIALIZE()` runs: factory reset, `CViewerApp::t_ProcessNormalBoot`, the
   "No Signal" message, with real images from rocommon.
-- `fb.c` composites to the HD2 screen. **The screen is still black:** the UI's
-  composition buffer in gfx3 (`0x974d86c0`) has content, but gfx0's memory
-  stays zero (checked with `memdump`). Next: log every GA op (`HD2TV_LOG` bit
-  `0x40`) to see what clears gfx0 or where the final blit goes, and show the
-  composition buffer directly with `HD2TV_PLANE=0x974d86c0,1280,720,0x1400`.
+- **The UI is on the HD2 screen:** GL on the Adreno into the composition
+  buffer (`0x975daa40`, 1280×720), `CCGfx::Update` blits it to gfx0 with the
+  GA, `fb.c` shows gfx0. The first screen is the "No Signal" message box.
+  - Text in it comes out dark where it is probably light: not looked at yet.
 
 ### Still to do
 
 - `TCTv::Power(3)`, `TCMW::WatchDog()`.
-- **Display:** see above. Planes from memcfg: gfx0 `0x949c0000`, gfx1 `0x95880000`, gfx2 `0x96b80000`, gfx3 `0x97480000`; cursor `0x94980000`.
-- **Mali** (`/dev/sam/mali`): `libMali` asks for the API version first (ioctl `0xc0048206`). Only needed if the UI uses GLES.
+- **Display:** planes from memcfg: gfx0 `0x949c0000`, gfx1 `0x95880000`, gfx2 `0x96b80000`, gfx3 `0x97480000`; cursor `0x94980000`.
 - **MICOM / remote input:** only acks. No power-on reason and no remote keys. Options:
   - drive input through the debug stdin pipe: `echo … >> /hd2/stdin`; `UartInputBase` accepts codes such as `1194444` and `8158282`;
   - or use the HD2's keys and touch screen.
