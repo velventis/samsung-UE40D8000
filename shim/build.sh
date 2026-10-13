@@ -15,3 +15,6 @@ echo built libhd2tv.so
 clang --target=armv7a-linux-gnueabi -marm -O2 -static -nostdlib -ffreestanding \
   -fno-stack-protector -fuse-ld=lld -o tools/hd2daemon tools/hd2daemon.c
 cp tools/hd2daemon ../overlay/rootfs/sbin/
+clang --target=armv7a-linux-gnueabi -marm -O2 -static -nostdlib -ffreestanding \
+  -fno-stack-protector -fuse-ld=lld -o tools/memdump tools/memdump.c
+cp tools/memdump ../overlay/rootfs/sbin/

@@ -110,6 +110,23 @@ static int open_common(const char *path, int flags, mode_t mode, bool is64)
             hd2tv_log("open /dev/mem -> %d", fd);
         return fd;
     }
+    if (path && (!strcmp(path, "/dev/ttyS1") || !strcmp(path, "/dev/ttyS3"))) {
+        /* the MICOM's and the debug UART: lines nothing answers on (ptys
+         * whose masters stay open but silent), so their readers block */
+        int master = -1;
+        int lock = 0, n = -1;
+        char pts[32];
+
+        if (master < 0)
+            master = real_open("/dev/ptmx", O_RDWR);
+        if (master >= 0 && real_ioctl(master, 0x40045431, &lock) == 0 &&
+            real_ioctl(master, 0x80045430, &n) == 0) {
+            snprintf(pts, sizeof(pts), "/dev/pts/%d", n);
+            fd = real_open(pts, flags, mode);
+            hd2tv_log("open %s -> %d (%s, silent)", path, fd, pts);
+            return fd;
+        }
+    }
     d = path ? hd2_dev_find(path, &unit) : 0;
     if (!d) {
         fd = is64 ? real_open64(path, flags, mode) : real_open(path, flags, mode);

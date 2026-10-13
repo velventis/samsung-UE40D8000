@@ -64,8 +64,10 @@ static void *fb_thread(void *arg)
     hd2tv_log("fb: %ux%u %ubpp (virtual %u), plane %08x %ux%u",
               v.xres, v.yres, v.bits_per_pixel, v.yres_virtual, src_pa,
               src_w, src_h);
-    if (!src || v.bits_per_pixel != 16)
+    if (!src || (v.bits_per_pixel != 16 && v.bits_per_pixel != 32))
         return 0;
+    hd2tv_log("fb: rgb offsets %u/%u/%u, line %u", v.red[0], v.green[0],
+              v.blue[0], f.line_length);
 
     /* landscape TV on the portrait panel: rotated 90 degrees clockwise,
      * the TV's width along the panel's height */
@@ -74,24 +76,27 @@ static void *fb_thread(void *arg)
     int pages = v.yres_virtual >= 2 * v.yres ? 2 : 1;
 
     for (;;) {
-        uint16_t *dst = (uint16_t *)(fb + (size_t)page * v.yres * f.line_length);
+        uint8_t *dst = fb + (size_t)page * v.yres * f.line_length;
 
         for (uint32_t py = 0; py < v.yres; py++) {      /* along TV x */
             uint32_t sx = py * src_w / ow;
-            uint16_t *row = (uint16_t *)((uint8_t *)dst + py * f.line_length);
+            uint8_t *row = dst + py * f.line_length;
             for (uint32_t px = 0; px < v.xres; px++) {
-                uint32_t c = 0;
+                uint32_t r = 0, g = 0, b = 0;
                 if (px >= x0 && px < x0 + oh) {
                     /* panel x grows to the right = TV y from the bottom */
                     uint32_t sy = (oh - 1 - (px - x0)) * src_h / oh;
-                    c = src[sy * (src_stride / 4) + sx];
+                    uint32_t c = src[sy * (src_stride / 4) + sx];
                     uint32_t a = c >> 24;
-                    uint32_t r = ((c >> 16) & 0xff) * a / 255;
-                    uint32_t g = ((c >> 8) & 0xff) * a / 255;
-                    uint32_t b = (c & 0xff) * a / 255;
-                    c = (r >> 3) << 11 | (g >> 2) << 5 | (b >> 3);
+                    r = ((c >> 16) & 0xff) * a / 255;
+                    g = ((c >> 8) & 0xff) * a / 255;
+                    b = (c & 0xff) * a / 255;
                 }
-                row[px] = c;
+                if (v.bits_per_pixel == 16)
+                    ((uint16_t *)row)[px] = (r >> 3) << 11 | (g >> 2) << 5 | (b >> 3);
+                else
+                    ((uint32_t *)row)[px] = r << v.red[0] | g << v.green[0] |
+                                            b << v.blue[0] | 0xffu << v.transp[0];
             }
         }
         v.yoffset = page * v.yres;

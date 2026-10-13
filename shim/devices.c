@@ -99,9 +99,21 @@ static int gfx_ioctl(int unit, unsigned long req, void *arg)
     return sam_ioctl(unit, req, arg);
 }
 
-/* NRSS (the CI+ crypto block): status reads at init */
+/* NRSS: a status read at init, then its event thread waits for
+ * interrupts (none come): each thread's first read returns zeros */
 static ssize_t zero_read(int unit, void *buf, size_t n)
 {
+    static long readers[16];
+    long tid = syscall(224);
+    int i;
+
+    for (i = 0; i < 16 && readers[i] && readers[i] != tid; i++)
+        ;
+    if (i < 16 && readers[i] == tid)
+        for (;;)
+            sleep(3600);
+    if (i < 16)
+        readers[i] = tid;
     memset(buf, 0, n);
     return n;
 }
