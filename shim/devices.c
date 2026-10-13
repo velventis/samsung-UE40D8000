@@ -118,11 +118,51 @@ static ssize_t zero_read(int unit, void *buf, size_t n)
     return n;
 }
 
+/* SE (security engine): its two crypto DMA channels finish at once.
+ * libSDAL starts a DMA with lldSe_SetDMAStartEnable(ch, 1) and waits for
+ * the completion interrupt, which its ISR thread reads from the device as
+ * { int source, int arg } (source 0/1: channel 0/1 DMA done).  Nothing is
+ * en- or decrypted: the buffer is left as it is. */
+static int se_irq[2] = { -1, -1 };
+
+static void se_open(int unit)
+{
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+
+    pthread_mutex_lock(&lock);
+    if (se_irq[0] < 0)
+        pipe(se_irq);
+    pthread_mutex_unlock(&lock);
+}
+
+static ssize_t se_read(int unit, void *buf, size_t n)
+{
+    int32_t ev[2];
+
+    if (se_irq[0] < 0 || syscall(3, se_irq[0], ev, sizeof(ev)) != sizeof(ev))
+        for (;;)
+            sleep(3600);
+    memcpy(buf, ev, n < sizeof(ev) ? n : sizeof(ev));
+    return n < sizeof(ev) ? n : sizeof(ev);
+}
+
+void lldSe_SetDMAStartEnable(int ch, unsigned en)
+{
+    static void (*real)(int, unsigned);
+    int32_t ev[2] = { ch, 0 };
+
+    if (!real)
+        real = (void (*)(int, unsigned))dlsym(RTLD_NEXT, "lldSe_SetDMAStartEnable");
+    real(ch, en);
+    if ((en & 1) && (ch == 0 || ch == 1) && se_irq[1] >= 0)
+        syscall(4, se_irq[1], ev, sizeof(ev));
+}
+
 static const struct hd2_dev devs[] = {
     { "sys", 0, 0, sys_ioctl },
     { "ae", 0, 0, hd2_ae_ioctl }, { "aio", 0, 0, sam_ioctl }, { "avd", 0, 0, sam_ioctl }, { "dbg", 0, 0, sam_ioctl }, { "dp", 0, 0, sam_ioctl }, { "gfx", 0, 0, gfx_ioctl },
     { "mfc", 0, 0, sam_ioctl }, { "mpeg", 0, 0, sam_ioctl }, { "nrss", 0, 0, sam_ioctl, 0, zero_read }, { "playback", 0, 0, sam_ioctl }, { "record", 0, 0, sam_ioctl },
-    { "se", 0, 0, sam_ioctl }, { "shdsp", 0, 0, sam_ioctl }, { "tsd", 0, 0, sam_ioctl }, { "tsdqueue", 0, 0, sam_ioctl }, { "Ci", 0, 0, sam_ioctl }, { "Jpeg", 0, 0, sam_ioctl },
+    { "se", 0, se_open, sam_ioctl, 0, se_read }, { "shdsp", 0, 0, sam_ioctl }, { "tsd", 0, 0, sam_ioctl }, { "tsdqueue", 0, 0, sam_ioctl }, { "Ci", 0, 0, sam_ioctl }, { "Jpeg", 0, 0, sam_ioctl },
     { "Mspi" }, { "h264", 0, 0, sam_ioctl }, { "mali" },
     { "sdp_hwmem", "/dev/sdp_hwmem" },
 };

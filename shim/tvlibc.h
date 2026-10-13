@@ -51,6 +51,7 @@ int ftruncate(int, off_t);
 int ftruncate64(int, off64_t);
 int unlink(const char *);
 int dup(int);
+int pipe(int[2]);
 int usleep(unsigned);
 unsigned sleep(unsigned);
 pid_t getpid(void);

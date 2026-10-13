@@ -215,17 +215,12 @@ address. That covers:
 - The TV userland boots on the HD2: the rootfs, the profile scripts and the SquashFS/RFS mounts.
 - `exeDSP` gets through `libSDAL` init (`spISys_Init`), with each module's init returning 0: TSD/TSM, DP, FRC, SIF, Gfx, AVD, AFE, SE, JPEG, MFC, HDMI Rx, PVR, MPEG and the audio engine.
 - Fast boot runs, including the EEPROM defaults, which take a few minutes on first boot.
-- `main()` → `Main()` → `TCMW::Initialize()` starts.
+- `main()` → `Main()` → `TCMW::Initialize()` runs to the end ("TCMW::Initialize() end" in the log). The CI+ manager's wait on the crypto engine during middleware init stalled for several minutes but returned on its own. Nothing was changed to get past it.
+- `fb.c` composites to the HD2 screen. The screen is black so far: plane 0 is empty or transparent at this point.
 
-### Blocked
+### Still to do
 
-- **Where:** `TCMW::Initialize` → `TCTvMiddleware_EU::t_InitMiddlewareModule` → `TCCIM::Instance()->Create()` → `TCCIMManagerPlus::Create`.
-- **What happens:** that path hands stored CI+ data to the hardware crypto engine (SE) and waits forever for its DMA-completion interrupt.
-- **Why it's unresolved:** the previous agent stopped here. Getting past it means emulating that crypto engine or changing CI+ behaviour, and it declined that work.
-
-### After that, still to do
-
-- The rest of `TCMW::Initialize`, then `APP_INITIALIZE()`, `TCTv::Power(3)`, `TCMW::WatchDog()`.
+- `APP_INITIALIZE()`, `TCTv::Power(3)`, `TCMW::WatchDog()`.
 - **Display:** confirm which plane and format the UI draws into. The `fb.c` default is a guess.
   - Planes from memcfg: gfx0 `0x949c0000`, gfx1 `0x95880000`, gfx2 `0x96b80000`, gfx3 `0x97480000`; cursor `0x94980000`.
   - Planes are drawn by the GA (2D accelerator) through registers. Blits may need emulating, or overriding at the `SdGfx_*` / `spIIoGfx_*` level, which is interposable through the PLT.
