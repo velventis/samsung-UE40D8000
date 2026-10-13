@@ -1,0 +1,17 @@
+#!/bin/sh
+echo "/etc/rc.local start!!!!"
+
+
+# mount ramdisk (fstab define ramdisk..."mount -a" already performed) 
+mount -t proc /proc
+mount -t sysfs /sys
+mount -t tmpfs none /dev/sam -o size=1K,mode=1777
+mount -t tmpfs none /dtv -o size=10M,mode=1777
+mount -t tmpfs none /dsm -o size=15M,mode=1777
+mount -t tmpfs none /core -o mode=1777 #for coredump
+mount -t tmpfs none /tmp -o size=300M,mode=1777
+
+
+
+# HD2: the Android kernel suspends when no wakelock is held
+echo samsung-tv > /sys/power/wake_lock
