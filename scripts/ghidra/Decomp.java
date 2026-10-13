@@ -20,6 +20,14 @@ public class Decomp extends GhidraScript {
                 Address ad = toAddr(a[i]);
                 Function f = fm.getFunctionContaining(ad);
                 if (f != null) fs.add(f);
+            } else if (a[i].startsWith("refs:")) {
+                // functions referencing an address (data or code)
+                Address ad = toAddr(a[i].substring(5));
+                for (Reference r : getReferencesTo(ad)) {
+                    Function f = fm.getFunctionContaining(r.getFromAddress());
+                    out.println("// ref from " + r.getFromAddress() + " " + r.getReferenceType() + " in " + (f == null ? "?" : f.getName()));
+                }
+                continue;
             } else if (a[i].startsWith("xref:")) {
                 // functions referencing a string containing the text
                 String t = a[i].substring(5);

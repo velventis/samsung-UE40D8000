@@ -102,8 +102,12 @@ static int open_common(const char *path, int flags, mode_t mode, bool is64)
         return fd;
     }
     d = path ? hd2_dev_find(path, &unit) : 0;
-    if (!d)
-        return is64 ? real_open64(path, flags, mode) : real_open(path, flags, mode);
+    if (!d) {
+        fd = is64 ? real_open64(path, flags, mode) : real_open(path, flags, mode);
+        if (fd < 0 && path && !strncmp(path, "/dev/", 5) && (hd2tv_log_mask & 1))
+            hd2tv_log("open %s failed", path);
+        return fd;
+    }
     fd = real_open("/dev/null", O_RDWR);
     if (fd >= 0 && fd < MAX_FD) {
         fake[fd] = d;
