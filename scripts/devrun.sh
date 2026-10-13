@@ -6,6 +6,7 @@ A="adb -s 127.0.0.1:${ADB_PORT:-5575}"
 scripts/adbc.sh || exit 1
 shim/build.sh >/dev/null || exit 1
 sed -e '/hd2noexe/d' -e 's|/mtd_exe/hd2/libhd2tv.so|/hd2/libhd2tv.so|' \
+    -e "1a eval \$(grep '^export MTD_' /etc/profile)" \
     -e "1a export HD2TV_LOG=${HD2TV_LOG:-0x25}${HD2TV_PLANE:+ HD2TV_PLANE=$HD2TV_PLANE}${HD2TV_FPS:+ HD2TV_FPS=$HD2TV_FPS}" \
     -e 's|^\(HD2TV_LOG=.* \)\(LD_PRELOAD=.*\./exeDSP\)|touch /hd2/stdin; tail -f /hd2/stdin \| \1\2|' \
     overlay/exe/rc.local > work/run.sh

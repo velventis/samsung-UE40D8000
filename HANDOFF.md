@@ -286,14 +286,24 @@ address. That covers:
   buffer (`0x975daa40`, 1280×720), `CCGfx::Update` blits it to gfx0 with the
   GA, `fb.c` shows gfx0. The first screen is the "No Signal" message box.
   - Text in it comes out dark where it is probably light: not looked at yet.
+- **Remote keys:** `micom.c` sends lines written to the FIFO `/hd2/rckey` as
+  the MICOM's IR key packets (`ff ff 10 code 0 0 0 0 sum`): a key code or a
+  name (`smarthub`, `menu`, `source`, `up`/`down`/`left`/`right`, `enter`,
+  `return`, `exit`, digits, colours...). Codes are the TV's `KEY_*` values
+  (`KEY_CONTENTS` 0x79 is Smart Hub):
+  `adb -s 127.0.0.1:5575 shell 'echo smarthub > /hd2/rckey'`.
+- **Smart Hub** (InfoLink3) starts: it needs `/mtd_down` (`/mtd_rwcommon`,
+  SD p8) mounted, which `/etc/Scripts/rest_mount.sh` does with the `MTD_*`
+  variables of `/etc/profile` (`devrun.sh` exports them), and copies its
+  manager widget from `/mtd_rocommon/infolink` (the D5520's).
 
 ### Still to do
 
 - `TCTv::Power(3)`, `TCMW::WatchDog()`.
 - **Display:** planes from memcfg: gfx0 `0x949c0000`, gfx1 `0x95880000`, gfx2 `0x96b80000`, gfx3 `0x97480000`; cursor `0x94980000`.
-- **MICOM / remote input:** only acks. No power-on reason and no remote keys. Options:
-  - drive input through the debug stdin pipe: `echo … >> /hd2/stdin`; `UartInputBase` accepts codes such as `1194444` and `8158282`;
-  - or use the HD2's keys and touch screen.
+- **MICOM:** acks only; no power-on reason. Remote keys go in through
+  `/hd2/rckey` (see Working); the HD2's own keys and touch screen are not
+  wired to it yet.
 - **LCD vs PDP:** a GPIO read selects the panel type; the firmware currently picks PDP while the factory data says LCD.
 - **Audio output:** the AE initialises but nothing decodes or plays.
 
