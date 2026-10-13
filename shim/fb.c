@@ -1,10 +1,11 @@
 /*
- * The TV's picture on the HD2 screen: a thread copies a TV graphics
- * plane (in the emulated TV memory) to the HD2 framebuffer, rotated to
- * the portrait panel and scaled to its height.
+ * The TV's picture on the HD2 screen: a thread composites the graphics
+ * planes that are on (in the emulated TV memory, see gfx.c) over black
+ * and copies them to the HD2 framebuffer, rotated to the portrait panel
+ * and scaled to its height.
  *
- * HD2TV_PLANE=pa,width,height,stride picks the plane (ARGB8888);
- * HD2TV_FPS the refresh rate.
+ * HD2TV_PLANE=pa,width,height,stride shows that plane (ARGB8888) instead;
+ * HD2TV_FPS sets the refresh rate.
  */
 #include "hd2tv.h"
 
@@ -30,7 +31,10 @@ struct fb_fix {                 /* struct fb_fix_screeninfo */
 #define FBIOGET_FSCREENINFO 0x4602
 #define FBIOPAN_DISPLAY     0x4606
 
-static uint32_t src_pa = 0, src_w = 960, src_h = 540, src_stride = 0;
+static struct hd2tv_view fixed;          /* HD2TV_PLANE */
+
+#define TV_W 1920
+#define TV_H 1080
 
 static void *fb_thread(void *arg)
 {
@@ -38,7 +42,6 @@ static void *fb_thread(void *arg)
     struct fb_fix f;
     int fd, fps = 4, page = 0;
     uint8_t *fb;
-    const uint32_t *src;
     const char *e;
 
     (void)arg;
@@ -55,48 +58,62 @@ static void *fb_thread(void *arg)
         return 0;
     }
     if ((e = getenv("HD2TV_FPS")))
-        fps = atoi(e) > 0 ? atoi(e) : 10;
-    while (!src_pa && !(src_pa = hd2tv_memcfg(0x28)))  /* graphics plane 0 */
-        sleep(1);
-    if (!src_stride)
-        src_stride = src_w * 4;
-    src = hd2tv_phys(src_pa, src_stride * src_h);
-    hd2tv_log("fb: %ux%u %ubpp (virtual %u), plane %08x %ux%u",
-              v.xres, v.yres, v.bits_per_pixel, v.yres_virtual, src_pa,
-              src_w, src_h);
+        fps = atoi(e) > 0 ? atoi(e) : 4;
+    hd2tv_log("fb: %ux%u %ubpp (virtual %u)", v.xres, v.yres, v.bits_per_pixel,
+              v.yres_virtual);
     /* msm_fb reports 32 bpp for its RGB565 framebuffer: trust the line */
     v.bits_per_pixel = f.line_length * 8 / v.xres;
-    if (!src || (v.bits_per_pixel != 16 && v.bits_per_pixel != 32))
+    if (v.bits_per_pixel != 16 && v.bits_per_pixel != 32)
         return 0;
     hd2tv_log("fb: rgb offsets %u/%u/%u, line %u", v.red[0], v.green[0],
               v.blue[0], f.line_length);
 
     /* landscape TV on the portrait panel: rotated 90 degrees clockwise,
      * the TV's width along the panel's height */
-    uint32_t ow = v.yres, oh = ow * src_h / src_w;  /* 800 x 450 */
+    uint32_t ow = v.yres, oh = ow * TV_H / TV_W;    /* 800 x 450 */
     uint32_t x0 = (v.xres - oh) / 2;
     int pages = v.yres_virtual >= 2 * v.yres ? 2 : 1;
-    uint32_t *sxt = calloc(v.yres, 4), *syt = calloc(v.xres, 4);
+    /* TV coordinates (in 1920 x 1080) of each panel row and column */
+    uint32_t *tx = calloc(v.yres, 4), *ty = calloc(v.xres, 4);
+    uint32_t *acc = calloc(v.xres, 4);
 
     for (uint32_t py = 0; py < v.yres; py++)
-        sxt[py] = py * src_w / ow;
+        tx[py] = py * TV_W / ow;
     for (uint32_t px = 0; px < v.xres; px++)
-        syt[px] = px >= x0 && px < x0 + oh ?
-                  (oh - 1 - (px - x0)) * src_h / oh * (src_stride / 4) : ~0u;
+        ty[px] = px >= x0 && px < x0 + oh ? (oh - 1 - (px - x0)) * TV_H / oh : ~0u;
 
     for (;;) {
+        struct hd2tv_view pl[3];
+        const uint8_t *map[3];
+        int n = fixed.pa ? (pl[0] = fixed, 1) : hd2tv_gfx_planes(pl, 3);
         uint8_t *dst = fb + (size_t)page * v.yres * f.line_length;
 
+        for (int i = 0; i < n; i++)
+            map[i] = hd2tv_phys(pl[i].pa, pl[i].stride * pl[i].h);
         for (uint32_t py = 0; py < v.yres; py++) {      /* along TV x */
-            const uint32_t *col = src + sxt[py];
             uint8_t *row = dst + py * f.line_length;
+
+            memset(acc, 0, v.xres * 4);
+            for (int i = 0; i < n; i++) {
+                if (!map[i])
+                    continue;
+                const uint32_t *col = (const uint32_t *)map[i] + tx[py] * pl[i].w / TV_W;
+                for (uint32_t px = 0; px < v.xres; px++) {
+                    if (ty[px] == ~0u)
+                        continue;
+                    uint32_t c = col[ty[px] * pl[i].h / TV_H * (pl[i].stride / 4)];
+                    uint32_t a = (c >> 24) + (c >> 31), d = acc[px];  /* 0..256 */
+                    if (!a)
+                        continue;
+                    /* over the planes below (the bottom one over black) */
+                    uint32_t r = (((c >> 16) & 0xff) * a + ((d >> 16) & 0xff) * (256 - a)) >> 8;
+                    uint32_t g = (((c >> 8) & 0xff) * a + ((d >> 8) & 0xff) * (256 - a)) >> 8;
+                    uint32_t b = ((c & 0xff) * a + (d & 0xff) * (256 - a)) >> 8;
+                    acc[px] = r << 16 | g << 8 | b;
+                }
+            }
             for (uint32_t px = 0; px < v.xres; px++) {
-                uint32_t c = syt[px] == ~0u ? 0 : col[syt[px]];
-                /* premultiply by alpha (the OSD over a black video) */
-                uint32_t a = (c >> 24) + (c >> 31);     /* 0..256 */
-                uint32_t r = ((c >> 16) & 0xff) * a >> 8;
-                uint32_t g = ((c >> 8) & 0xff) * a >> 8;
-                uint32_t b = (c & 0xff) * a >> 8;
+                uint32_t c = acc[px], r = (c >> 16) & 0xff, g = (c >> 8) & 0xff, b = c & 0xff;
                 if (v.bits_per_pixel == 16)
                     ((uint16_t *)row)[px] = (r >> 3) << 11 | (g >> 2) << 5 | (b >> 3);
                 else
@@ -104,6 +121,10 @@ static void *fb_thread(void *arg)
                                             b << v.blue[0] | 0xffu << v.transp[0];
             }
         }
+        for (int i = 0; i < n; i++)
+            if (map[i])
+                munmap((void *)((uintptr_t)map[i] & ~0xfffu),
+                       pl[i].stride * pl[i].h + ((uintptr_t)map[i] & 0xfff));
         v.yoffset = page * v.yres;
         ioctl(fd, FBIOPAN_DISPLAY, &v);
         page = (page + 1) % pages;
@@ -119,10 +140,13 @@ void hd2_fb_init(void)
 
     if (e) {
         char *p;
-        src_pa = strtoul(e, &p, 0);
-        if (*p == ',') src_w = strtoul(p + 1, &p, 0);
-        if (*p == ',') src_h = strtoul(p + 1, &p, 0);
-        if (*p == ',') src_stride = strtoul(p + 1, &p, 0);
+        fixed.pa = strtoul(e, &p, 0);
+        fixed.w = 960;
+        fixed.h = 540;
+        if (*p == ',') fixed.w = strtoul(p + 1, &p, 0);
+        if (*p == ',') fixed.h = strtoul(p + 1, &p, 0);
+        fixed.stride = fixed.w * 4;
+        if (*p == ',') fixed.stride = strtoul(p + 1, &p, 0);
     }
     pthread_create(&t, 0, fb_thread, 0);
 }

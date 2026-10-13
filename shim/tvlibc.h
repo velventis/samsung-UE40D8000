@@ -75,6 +75,7 @@ int vsnprintf(char *, size_t, const char *, va_list);
 int fflush(FILE *);
 
 void *memcpy(void *, const void *, size_t);
+void *memmove(void *, const void *, size_t);
 void *memset(void *, int, size_t);
 int memcmp(const void *, const void *, size_t);
 size_t strlen(const char *);
@@ -123,3 +124,4 @@ int shmctl(int, int, void *);
 #define IPC_RMID 0
 int unsetenv(const char *);
 int mkdir(const char *, mode_t);
+FILE *fopen(const char *, const char *);

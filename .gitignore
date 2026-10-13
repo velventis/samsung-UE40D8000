@@ -14,3 +14,5 @@
 /tools/squashfs-tools/
 /tools/SamyGO_Firmware_Patcher/
 /tools/samygo-patcher/
+# a raw NAND dump of a UE46D5520RB (source of dec/d5520-rocommon.img)
+/UE46D5520RB NAND.zip

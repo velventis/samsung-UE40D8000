@@ -7,8 +7,9 @@
  *                    register blocks, backed by a sparse file on tmpfs
  *   /dev/sam/<dev>N  samdrv.ko's devices (ioctl/mmap emulated)
  *   /dev/sdp_*       the TV kernel's own drivers (GPIO, I2C, hwmem)
+ *   /dev/ttyS1       the MICOM, which acks the TV's commands
  *
- * HD2TV_LOG=<mask> selects the log (1 opens, 2 ioctls, 4 mmaps).
+ * HD2TV_LOG=<mask> selects the log (1 opens, 2 ioctls, 4 mmaps, 8 MICOM).
  */
 #include "tvlibc.h"
 #include "hd2tv.h"
@@ -108,6 +109,8 @@ static int open_common(const char *path, int flags, mode_t mode, bool is64)
     int unit, fd;
 
     init_real();
+    char img_buf[256];
+    path = hd2_image_path(path, img_buf, sizeof(img_buf));
     if (path && !strcmp(path, "/dev/mem")) {
         fd = dup(phys_fd);
         if (hd2tv_log_mask & 1)
@@ -115,8 +118,8 @@ static int open_common(const char *path, int flags, mode_t mode, bool is64)
         return fd;
     }
     if (path && (!strcmp(path, "/dev/ttyS1") || !strcmp(path, "/dev/ttyS3"))) {
-        /* the MICOM's and the debug UART: lines nothing answers on (ptys
-         * whose masters stay open but silent), so their readers block */
+        /* the MICOM's and the debug UART: ptys whose masters stay open;
+         * the MICOM's answers acks, the debug UART's stays silent */
         int master = -1;
         int lock = 0, n = -1;
         char pts[32];
@@ -127,7 +130,10 @@ static int open_common(const char *path, int flags, mode_t mode, bool is64)
             real_ioctl(master, 0x80045430, &n) == 0) {
             snprintf(pts, sizeof(pts), "/dev/pts/%d", n);
             fd = real_open(pts, flags, mode);
-            hd2tv_log("open %s -> %d (%s, silent)", path, fd, pts);
+            if (!strcmp(path, "/dev/ttyS1"))
+                hd2_micom_start(master);
+            hd2tv_log("open %s -> %d (%s%s)", path, fd, pts,
+                      strcmp(path, "/dev/ttyS1") ? ", silent" : ", MICOM");
             return fd;
         }
     }

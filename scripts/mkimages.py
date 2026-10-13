@@ -3,14 +3,17 @@
 
   out/nand.img    HD2 NAND: cLK 1.4, boot.img (HD2 kernel from kbuild/),
                   "system" = the TV rootfs (squashfs, patched)
+  out/rocommon.img  /mtd_rocommon: the UE46D5520's (dec/d5520-rocommon.img,
+                  from scripts/nand/extract_rocommon.py) with the D8000's
+                  bitmap names added, converted from same-named images
   out/sdcard.img  microSD standing in for the TV's eMMC and OneNAND:
-                    p1 swu  p2 rocommon  p3 emanual  p5 contents  (FAT)
+                    p1 swu  p3 emanual  p5 contents  (FAT)  p2 rocommon
                     p6 appext (squashfs)  p7 appext 2nd  p8 rwcommon (FAT)
                     p9 exe (squashfs)  p10 rwarea (FAT)
                   The rootfs's /dev/stl0/13 (exe) and /dev/stl0/12 (rwarea)
                   nodes point at p9 and p10.
 
-usage: scripts/mkimages.py [--only rootfs|exe|nand|sd]
+usage: scripts/mkimages.py [--only rootfs|exe|rocommon|nand|sd]
 """
 import argparse
 import os
@@ -49,7 +52,7 @@ DEV_ADD = {
 
 # SD card partitions: (number, MiB, content); content: 'fat' or a path
 SD_PARTS = [
-    (1, 16, 'fat'), (2, 8, 'fat'), (3, 16, 'fat'),
+    (1, 16, 'fat'), (2, None, 'out/rocommon.img'), (3, 16, 'fat'),
     (5, 64, 'fat'), (6, None, 'dec/appext.img'), (7, 4, 'fat'),
     (8, 64, 'fat'), (9, None, 'out/exe.img'), (10, 32, 'fat'),
 ]
@@ -112,6 +115,54 @@ def build_exe():
     mksquash(dst, os.path.join(OUT, 'exe.img'), nodes)
 
 
+def build_rocommon():
+    """the D5520's rocommon, plus the images the D8000's programs name that
+    it has under another extension or in another folder"""
+    from PIL import Image
+    dst = os.path.join(WORK, 'rocommon')
+    unsquash(os.path.join(TOP, 'dec/d5520-rocommon.img'), dst)
+    imgdir = os.path.join(dst, 'Images_960x540')
+    exe = os.path.join(WORK, 'exe')
+    if not os.path.isdir(exe):
+        unsquash(os.path.join(TOP, 'dec/exe.img'), exe)
+    wanted = set()
+    for root, _, files in os.walk(exe):
+        for f in files:
+            if f == 'exeDSP' or f.endswith('.so') or '.so.' in f:
+                out = subprocess.run(['strings', '-n', '6', os.path.join(root, f)],
+                                     capture_output=True, text=True).stdout
+                for w in out.splitlines():
+                    w = w.split('Images_960x540/')[-1]
+                    if re.fullmatch(r'[\w\- ]+(/[\w\- ]+)*\.(bmp|png)', w):
+                        wanted.add(w)
+    have = {}                       # lower-case stem -> [relative paths]
+    for root, _, files in os.walk(imgdir):
+        for f in files:
+            stem, ext = os.path.splitext(f)
+            if ext.lower() in ('.png', '.bmp', '.jpg'):
+                rel = os.path.relpath(os.path.join(root, f), imgdir)
+                have.setdefault(stem.lower(), []).append(rel)
+    made = 0
+    for w in sorted(wanted):
+        if os.path.exists(os.path.join(imgdir, w)):
+            continue
+        stem = os.path.splitext(os.path.basename(w))[0].lower()
+        cands = have.get(stem)
+        if not cands:
+            continue
+        # the same folder, else Common, else any
+        wdir = os.path.dirname(w).lower()
+        cands = sorted(cands, key=lambda c: (os.path.dirname(c).lower() != wdir,
+                                             not c.startswith('Common'), c))
+        im = Image.open(os.path.join(imgdir, cands[0])).convert('RGBA')
+        out = os.path.join(imgdir, w)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        im.save(out, 'BMP' if w.endswith('.bmp') else 'PNG')
+        made += 1
+    print('rocommon: %d of %d wanted images added' % (made, len(wanted)))
+    mksquash(dst, os.path.join(OUT, 'rocommon.img'), {})
+
+
 def build_nand():
     lk = bytearray(open(LK, 'rb').read())
     off, parts = mk.clk14_ptable(lk)
@@ -157,9 +208,10 @@ def build_sd():
     script = ['label: dos', 'unit: sectors']
     lba = 2048
     starts = {}
-    for num, mb, _ in sizes[:3]:
+    for num, mb, content in sizes[:3]:
         starts[num] = lba
-        script.append('start=%d, size=%d, type=c' % (lba, mb * 2048))
+        t = 'c' if content == 'fat' else '83'
+        script.append('start=%d, size=%d, type=%s' % (lba, mb * 2048, t))
         lba += mb * 2048
     ext_size = sum(mb * 2048 + 2048 for _, mb, _ in sizes[3:])
     script.append('start=%d, size=%d, type=5' % (lba, ext_size))
@@ -183,12 +235,35 @@ def build_sd():
                     'seek=%d' % (starts[num] * 512), 'status=none')
                 print('  p%-2d %4d MiB %s (updated)' % (num, mb, content))
         return
+    # a new layout: FAT partitions that keep their number and size are
+    # carried over from the old card (unless SD_FRESH=1)
+    keep = {}
+    if os.environ.get('SD_FRESH') != '1' and os.path.exists(path):
+        import json
+        pt = json.loads(subprocess.run(['sfdisk', '-J', path], check=True,
+                                       capture_output=True, text=True).stdout)
+        old = {int(re.search(r'(\d+)$', p['node']).group(1)): p
+               for p in pt['partitiontable']['partitions']}
+        for num, mb, content in sizes:
+            o = old.get(num)
+            if content == 'fat' and o and o['type'] == 'c' and o['size'] == mb * 2048:
+                keep[num] = o['start']
+        if keep:
+            os.replace(path, path + '.old')
     with open(path, 'wb') as f:
         f.truncate(total * 512)
     run('sfdisk', '-q', path, input='\n'.join(script) + '\n', text=True)
     open(sig, 'w').write(layout)
     tmp = os.path.join(WORK, 'part.img')
     for num, mb, content in sizes:
+        if num in keep:
+            run('dd', 'if=' + path + '.old', 'of=' + path, 'bs=1M',
+                'conv=notrunc', 'iflag=skip_bytes,count_bytes',
+                'oflag=seek_bytes', 'skip=%d' % (keep[num] * 512),
+                'count=%d' % (mb << 20), 'seek=%d' % (starts[num] * 512),
+                'status=none')
+            print('  p%-2d %4d MiB fat (kept)' % (num, mb))
+            continue
         if content == 'fat':
             if os.path.exists(tmp):
                 os.unlink(tmp)
@@ -204,15 +279,17 @@ def build_sd():
     size = 1 << (total * 512 - 1).bit_length()     # QEMU: a power of 2
     with open(path, 'r+b') as f:
         f.truncate(size)
+    if keep:
+        os.unlink(path + '.old')
     print('out/sdcard.img: %d MiB' % (size >> 20))
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--only', choices=['rootfs', 'exe', 'nand', 'sd'],
+    ap.add_argument('--only', choices=['rootfs', 'exe', 'rocommon', 'nand', 'sd'],
                     action='append')
     a = ap.parse_args()
-    steps = a.only or ['rootfs', 'exe', 'nand', 'sd']
+    steps = a.only or ['rootfs', 'exe', 'rocommon', 'nand', 'sd']
     os.makedirs(WORK, exist_ok=True)
     os.makedirs(OUT, exist_ok=True)
     for s in steps:

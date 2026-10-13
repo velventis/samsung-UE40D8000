@@ -128,7 +128,7 @@ readable names.
 | Partition | Size | Contents | TV mount |
 |---|---|---|---|
 | p1 | 16 MiB | FAT | swu |
-| p2 | 8 MiB | FAT | rocommon (empty) |
+| p2 | 46 MiB | `out/rocommon.img` (SquashFS) | rocommon (UI images, from a UE46D5520) |
 | p3 | 16 MiB | FAT | emanual |
 | p5 | 64 MiB | FAT | contents |
 | p6 | 45 MiB | `appext.img` (SquashFS) | appext |
@@ -137,7 +137,42 @@ readable names.
 | p9 | 81 MiB | `exe.img` (SquashFS) | exe |
 | p10 | 32 MiB | FAT | rwarea |
 
-The card is padded to 512 MiB, because QEMU needs a power of two.
+The card is padded to 512 MiB, because QEMU needs a power of two. When the
+layout changes, FAT partitions that keep their number and size are copied
+over from the old card (`SD_FRESH=1` formats them anew).
+
+### `/mtd_rocommon`: UI images from a UE46D5520RB NAND dump
+
+The TV's ROM partition (`Images_960x540`, fonts) is written at the factory
+and is not in the firmware update. `UE46D5520RB NAND.zip` (repo root,
+git-ignored) is a raw dump of a sibling model's 2 GiB MLC NAND that has one.
+
+- **Geometry:** blocks of 128 pages; pages of 8192 data + 436 spare bytes
+  (the 1,104,384-byte blocks look like 256 pages of 4314 in a hex dump: they aren't).
+- **ECC, not applied in the dump** (about one bit flip per 4 KB): BCH over
+  GF(2^14), polynomial `0x402b`, t = 24, per 1024-byte sector. The codeword is
+  the sector, then its 12 free OOB bytes, then 42 ECC bytes, bits LSB first.
+  The spare is 8 × [12 OOB + 42 ECC] + 4. `scripts/nand/nandecc.c` corrects it.
+- **Flash layout:** Samsung FSR. `FSRPART` near the end lists 5 STL partitions:
+  `0x1b`–`0x1e` are FAT32 (RFS), and `0x1f` (blocks 1724–1923) holds a
+  45 MB SquashFS, the D5520's rocommon. STL keeps its 1 MiB logical units in
+  physical blocks out of order (pages within a unit are in order), and its
+  map wasn't decoded. `scripts/nand/extract_rocommon.py` orders them from the
+  filesystem itself: the inode/fragment tables say where each compressed block
+  starts, and every unit goes where those blocks decompress.
+
+```bash
+unzip "UE46D5520RB NAND.zip" -d work/d5520
+scripts/nand/extract_rocommon.py "work/d5520/UE46D5520RB NAND.bin" dec/d5520-rocommon.img
+```
+
+`mkimages.py --only rocommon` (run by `cycle.sh` when `out/rocommon.img` is
+missing, or with `ROCOMMON=1`) adds the D8000's names the D5520 has as PNG,
+or in another folder, converted to 32-bpp BMP: 1960 of the 4446 images
+`exeDSP` names exist. Most of `Common`, `Menu`, `MenuAnimation` and
+`TVViewer` are not there (on the D5520 they were on its other flash). The
+shim stands in for the rest (`images.c`), and for the missing TV fonts with
+Liberation Sans (`/mtd_exe/hd2/font.ttf`).
 
 ## The shim (`shim/libhd2tv.so`)
 
@@ -167,13 +202,22 @@ address. That covers:
   | `0x5905` | `SetMemoryMap` | Stores `u32[0x82]`, readable with `hd2tv_memcfg(id)` |
   | `0x5909` | Kernel memory sizes | Returns 388/198/512/512 MiB, as `CheckMemoryMap` expects |
 
-- **`gfx`** (`devices.c`):
-
-  | ioctl | Returns | Memory ids used |
-  |---|---|---|
-  | `0x4711` | Plane base and size | `0x28`, `0x2a`, `0x2c`, `0x30` |
-  | `0x4712` | ROP buffer | `0x7e` |
-  | `0x47aa` | Cursor | `0x26` |
+- **`gfx`** (`gfx.c`): the driver's per-plane state (Set ioctls stored,
+  Get ioctls return it; argument sizes from `samdrv.ko`'s copy_from/to_user),
+  the planes' back/front buffers as `devGfx_InitInfo` lays them out, and the
+  GA done by the CPU: `FillRect` `{dst, pitch, fmt, x, y, w, h, color}`,
+  `BltCopy` `{fmt, src, spitch, sx, sy, w, h, dst, dpitch, dx, dy}`, `BltROP`
+  `{mode, fmt, src, spitch, sx, sy, w, h, dst, dpitch, dx, dy, rule, key,
+  alpha, ...}` (rule is `SdROPMode_k`; drawn as source-over except 2 colour
+  key, 0xb constant alpha, 0xc clear), `UpdateOsd*` copy back to front.
+  Planes: gfx0 1280×720, gfx1 1920×1080, gfx2 960×540 (format `0x10` =
+  ARGB8888), gfx3 the GA's scratch/ROP memory (the UI composes there, at
+  `0x974d86c0`, pitch `0x1400`, then blits to gfx0).
+- **`se`** (`devices.c`, the security engine): `lldSe_SetDMAStartEnable` is
+  wrapped; each DMA start queues a completion `{channel, 0}` that the SE ISR
+  thread reads from the device. Nothing is en- or decrypted. Without it the
+  CI+ manager (`CCipSecureTime::t_ReadFromNVRAM`) waits forever on the DMA
+  semaphore.
 
 - **`ae`** (`ae.c`, the audio DSP):
   - Init returns the instance number as the handle.
@@ -192,9 +236,11 @@ address. That covers:
   - Ioctl `0x4a` configures, `0x4b` writes, `0x4c` reads.
   - The arg is `{u16 port<<4|bit; u16 pad; u8 value}`.
   - Reads return the last value written, or 0.
-- **UARTs:** `/dev/ttyS1` (MICOM) and `/dev/ttyS3` (debug) get the slave side of a pty that nobody answers on.
+- **UARTs:** `/dev/ttyS1` (MICOM) and `/dev/ttyS3` (debug) get the slave
+  side of a pty. On the MICOM's, `micom.c` acks each command (`ff ff cmd
+  p0..p4 sum`, echoed back), except the codes the TV parses as MICOM events.
 - **Display** (`fb.c`):
-  - A thread copies graphics plane 0 (memcfg `0x28`, assumed 960×540 ARGB8888) to `/dev/fb0`.
+  - A thread composites the planes that are on (`hd2tv_gfx_planes`: gfx2, gfx1, then gfx0 on top) over black to `/dev/fb0`.
   - The image is rotated 90° and scaled to 800×450 on the portrait panel, at 4 fps.
   - `msm_fb` reports 32 bpp but is RGB565 (960-byte lines), so the pixel size comes from `line_length`.
   - Override the plane with `HD2TV_PLANE=pa,w,h,stride`.
@@ -215,17 +261,21 @@ address. That covers:
 - The TV userland boots on the HD2: the rootfs, the profile scripts and the SquashFS/RFS mounts.
 - `exeDSP` gets through `libSDAL` init (`spISys_Init`), with each module's init returning 0: TSD/TSM, DP, FRC, SIF, Gfx, AVD, AFE, SE, JPEG, MFC, HDMI Rx, PVR, MPEG and the audio engine.
 - Fast boot runs, including the EEPROM defaults, which take a few minutes on first boot.
-- `main()` → `Main()` → `TCMW::Initialize()` runs to the end ("TCMW::Initialize() end" in the log). The CI+ manager's wait on the crypto engine during middleware init stalled for several minutes but returned on its own. Nothing was changed to get past it.
-- `fb.c` composites to the HD2 screen. The screen is black so far: plane 0 is empty or transparent at this point.
+- `main()` → `Main()` → `TCMW::Initialize()` runs to the end ("TCMW::Initialize() end" in the log). The CI+ manager's wait on the crypto engine (SE) DMA semaphore has no timeout; the shim's SE completion events (see `se` above) get it past.
+- `APP_INITIALIZE()` runs: factory reset, `CViewerApp::t_ProcessNormalBoot`, the
+  "No Signal" message, with real images from rocommon.
+- `fb.c` composites to the HD2 screen. **The screen is still black:** the UI's
+  composition buffer in gfx3 (`0x974d86c0`) has content, but gfx0's memory
+  stays zero (checked with `memdump`). Next: log every GA op (`HD2TV_LOG` bit
+  `0x40`) to see what clears gfx0 or where the final blit goes, and show the
+  composition buffer directly with `HD2TV_PLANE=0x974d86c0,1280,720,0x1400`.
 
 ### Still to do
 
-- `APP_INITIALIZE()`, `TCTv::Power(3)`, `TCMW::WatchDog()`.
-- **Display:** confirm which plane and format the UI draws into. The `fb.c` default is a guess.
-  - Planes from memcfg: gfx0 `0x949c0000`, gfx1 `0x95880000`, gfx2 `0x96b80000`, gfx3 `0x97480000`; cursor `0x94980000`.
-  - Planes are drawn by the GA (2D accelerator) through registers. Blits may need emulating, or overriding at the `SdGfx_*` / `spIIoGfx_*` level, which is interposable through the PLT.
+- `TCTv::Power(3)`, `TCMW::WatchDog()`.
+- **Display:** see above. Planes from memcfg: gfx0 `0x949c0000`, gfx1 `0x95880000`, gfx2 `0x96b80000`, gfx3 `0x97480000`; cursor `0x94980000`.
 - **Mali** (`/dev/sam/mali`): `libMali` asks for the API version first (ioctl `0xc0048206`). Only needed if the UI uses GLES.
-- **MICOM / remote input:** not emulated. The silent UART means no power-on reason and no remote keys. Options:
+- **MICOM / remote input:** only acks. No power-on reason and no remote keys. Options:
   - drive input through the debug stdin pipe: `echo … >> /hd2/stdin`; `UartInputBase` accepts codes such as `1194444` and `8158282`;
   - or use the HD2's keys and touch screen.
 - **LCD vs PDP:** a GPIO read selects the panel type; the firmware currently picks PDP while the factory data says LCD.

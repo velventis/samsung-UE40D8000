@@ -30,3 +30,7 @@ uint32_t hd2tv_memcfg(unsigned id);
 void hd2_regs_init(void);
 void hd2_ipc_clean(void);
 void hd2_fb_init(void);
+void hd2_micom_start(int master);
+const char *hd2_image_path(const char *path, char *buf, size_t n);
+struct hd2tv_view { uint32_t pa, w, h, stride; };   /* an ARGB8888 plane */
+int hd2tv_gfx_planes(struct hd2tv_view *v, int max);

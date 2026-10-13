@@ -6,6 +6,7 @@
 struct sam_arg { void *buf; int32_t ret; };
 
 int hd2_ae_ioctl(int unit, unsigned long req, void *arg);
+int hd2_gfx_ioctl(int unit, unsigned long req, void *arg);
 
 /* the default: success, outputs left as they are */
 static int sam_ioctl(int unit, unsigned long req, void *arg)
@@ -75,30 +76,6 @@ static int sys_ioctl(int unit, unsigned long req, void *arg)
     return sam_ioctl(unit, req, arg);
 }
 
-/* ---------------------------------------------------------------- gfx */
-static int gfx_ioctl(int unit, unsigned long req, void *arg)
-{
-    struct sam_arg *a = arg;
-    uint32_t *out = a->buf;
-    static const uint8_t plane_id[4] = { 0x28, 0x2a, 0x2c, 0x30 };
-
-    switch (req) {
-    case 0x4711:                /* plane base, size */
-        out[0] = hd2tv_memcfg(plane_id[unit & 3]);
-        out[1] = hd2tv_memcfg(plane_id[unit & 3] + 1);
-        break;
-    case 0x4712:                /* ROP buffer (plane 3) */
-        out[0] = (unit & 3) == 3 ? hd2tv_memcfg(0x7e) : 0;
-        out[1] = (unit & 3) == 3 ? hd2tv_memcfg(0x7f) : 0;
-        break;
-    case 0x47aa:                /* cursor base, size */
-        out[0] = hd2tv_memcfg(0x26);
-        out[1] = hd2tv_memcfg(0x27);
-        break;
-    }
-    return sam_ioctl(unit, req, arg);
-}
-
 /* NRSS: a status read at init, then its event thread waits for
  * interrupts (none come): each thread's first read returns zeros */
 static ssize_t zero_read(int unit, void *buf, size_t n)
@@ -160,7 +137,7 @@ void lldSe_SetDMAStartEnable(int ch, unsigned en)
 
 static const struct hd2_dev devs[] = {
     { "sys", 0, 0, sys_ioctl },
-    { "ae", 0, 0, hd2_ae_ioctl }, { "aio", 0, 0, sam_ioctl }, { "avd", 0, 0, sam_ioctl }, { "dbg", 0, 0, sam_ioctl }, { "dp", 0, 0, sam_ioctl }, { "gfx", 0, 0, gfx_ioctl },
+    { "ae", 0, 0, hd2_ae_ioctl }, { "aio", 0, 0, sam_ioctl }, { "avd", 0, 0, sam_ioctl }, { "dbg", 0, 0, sam_ioctl }, { "dp", 0, 0, sam_ioctl }, { "gfx", 0, 0, hd2_gfx_ioctl },
     { "mfc", 0, 0, sam_ioctl }, { "mpeg", 0, 0, sam_ioctl }, { "nrss", 0, 0, sam_ioctl, 0, zero_read }, { "playback", 0, 0, sam_ioctl }, { "record", 0, 0, sam_ioctl },
     { "se", 0, se_open, sam_ioctl, 0, se_read }, { "shdsp", 0, 0, sam_ioctl }, { "tsd", 0, 0, sam_ioctl }, { "tsdqueue", 0, 0, sam_ioctl }, { "Ci", 0, 0, sam_ioctl }, { "Jpeg", 0, 0, sam_ioctl },
     { "Mspi" }, { "h264", 0, 0, sam_ioctl }, { "mali" },
