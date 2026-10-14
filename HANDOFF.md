@@ -60,6 +60,15 @@ scripts/stop.sh                  # stop this checkout's emulator only
   - The console is UART1 on `run/console.sock`, logged to `run/uart1.log`.
   - adb is on `127.0.0.1:5575`; port 5555 belongs to the other HD2 checkout.
 
+### A real HD2
+
+`scripts/mkhd2zip.py` packages `out/hd2-samsung-ue40d8000.zip` for an HD2
+with cLK 1.5: `boot.img` (without `hd2noexe`, the board's memory map),
+`boot-extramem.img` (also RAM at 0x30000000, unverified on hardware),
+`system.img`, `sdcard.img`, fastboot scripts for the partition layout
+(`misc recovery sboot boot system cache userdata`: the root is mtdblock4) and
+a README. Never tried on a real HD2. Build the kernel and all images first.
+
 ### Fast dev loop
 
 1. Boot once with the TV app off:
