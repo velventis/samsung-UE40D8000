@@ -9,7 +9,8 @@
  *   /dev/sdp_*       the TV kernel's own drivers (GPIO, I2C, hwmem)
  *   /dev/ttyS1       the MICOM, which acks the TV's commands
  *
- * HD2TV_LOG=<mask> selects the log (1 opens, 2 ioctls, 4 mmaps, 8 MICOM).
+ * HD2TV_LOG=<mask> selects the log (1 opens, 2 ioctls, 4 mmaps, 8 MICOM,
+ * 0x200 SE cipher jobs).
  */
 #include "tvlibc.h"
 #include "hd2tv.h"
@@ -131,6 +132,7 @@ __attribute__((constructor)) static void hd2tv_init(void)
     hd2_devices_init();
     hd2_regs_init();
     hd2tv_crash_init();
+    hd2_crypto_selftest();
     hd2_fb_init();
 }
 

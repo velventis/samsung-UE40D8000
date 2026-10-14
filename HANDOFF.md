@@ -213,11 +213,16 @@ address. That covers:
   Planes: gfx0 1280×720, gfx1 1920×1080, gfx2 960×540 (format `0x10` =
   ARGB8888), gfx3 the GA's scratch/ROP memory (the UI composes there, at
   `0x974d86c0`, pitch `0x1400`, then blits to gfx0).
-- **`se`** (`devices.c`, the security engine): `lldSe_SetDMAStartEnable` is
-  wrapped; each DMA start queues a completion `{channel, 0}` that the SE ISR
-  thread reads from the device. Nothing is en- or decrypted. Without it the
-  CI+ manager (`CCipSecureTime::t_ReadFromNVRAM`) waits forever on the DMA
-  semaphore.
+- **`se`** (the security engine):
+  - `devices.c`: `lldSe_SetDMAStartEnable` is wrapped; each DMA start queues a
+    completion `{channel, 0}` that the SE ISR thread reads from the device.
+    Without it the CI+ manager (`CCipSecureTime::t_ReadFromNVRAM`) waits
+    forever on the DMA semaphore.
+  - `crypto.c`: the cipher jobs (`uldSe_SetCpDesDerived`: DES, 3DES, AES-128/256
+    in ECB/CBC/CTR) are done by the CPU when software gives the key (key mode
+    1). Jobs with the chip's own keys (key modes 2-5, efuse) still go to the
+    emulated engine, which leaves the data as it is. `HD2TV_LOG` 0x200 logs the
+    jobs (keys of decryptions), 0x400 adds exeDSP return addresses.
 
 - **`ae`** (`ae.c`, the audio DSP):
   - Init returns the instance number as the handle.
@@ -292,10 +297,19 @@ address. That covers:
   `return`, `exit`, digits, colours...). Codes are the TV's `KEY_*` values
   (`KEY_CONTENTS` 0x79 is Smart Hub):
   `adb -s 127.0.0.1:5575 shell 'echo smarthub > /hd2/rckey'`.
-- **Smart Hub** (InfoLink3) starts: it needs `/mtd_down` (`/mtd_rwcommon`,
-  SD p8) mounted, which `/etc/Scripts/rest_mount.sh` does with the `MTD_*`
-  variables of `/etc/profile` (`devrun.sh` exports them), and copies its
-  manager widget from `/mtd_rocommon/infolink` (the D5520's).
+- **Smart Hub** (InfoLink3) starts and shows its loading indicator: it needs
+  `/mtd_down` (`/mtd_rwcommon`, SD p8) mounted, which
+  `/etc/Scripts/rest_mount.sh` does with the `MTD_*` variables of
+  `/etc/profile` (`devrun.sh` exports them), and copies its manager widget
+  from `/mtd_rocommon/infolink` (the D5520's).
+  - **Blocked:** the widget's files (`*.cmk`) are AES-128-CBC with a "common
+    key" (`DecryptWithCommonKey`, `CMK_to_membuf`): one of three 32-byte
+    key+IV blobs in exeDSP (`0x358ac5c`, from `FUN_0152215c`) decrypted by the
+    SE with its efuse key (key mode 3). That key is in the SDP1004's silicon;
+    without it the blob is used as it is and `config.xml.cmk` comes out as
+    garbage (`DM_LoadXMLFile: DOM tree creation Failed`).
+  - Secure storage (`/mtd_rwarea/security`, `/mtd_rwcommon/psa`) written while
+    the SE did not encrypt has to be deleted once (done on this card).
 
 ### Still to do
 
