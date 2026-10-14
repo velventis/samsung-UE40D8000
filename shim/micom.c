@@ -11,6 +11,8 @@
  * decimal) or a name below, go to the TV as the MICOM's IR key packets
  * (ff ff 10 code 0 0 0 0 sum: KeyInputBase's RC key).
  *   echo smarthub > /hd2/rckey
+ * And the HD2's own buttons (the htcleo-keypad input device): the Windows
+ * button is Smart Hub, the volume rocker the volume keys.
  */
 #include "hd2tv.h"
 
@@ -82,6 +84,94 @@ static int key_code(const char *s)
     return end != s && !*end && v < 256 ? (int)v : -1;
 }
 
+static void send_key(int master, int k, const char *what)
+{
+    uint8_t p[9] = { 0xff, 0xff, 0x10, k, 0, 0, 0, 0, 0x10 + k };
+
+    if (hd2tv_log_mask & 8)
+        hd2tv_log("micom: remote key %s (0x%02x)", what, k);
+    syscall(4, master, p, 9);
+}
+
+/* the HD2's buttons (Linux key codes, the kernel's Android keymap) */
+static const struct { uint16_t code; uint8_t tv; bool repeat; const char *name; } buttons[] = {
+    { 139, 0x79, false, "windows: smarthub" },     /* KEY_MENU: the Windows button */
+    { 115, 0x07, true, "volume +" },               /* KEY_VOLUMEUP */
+    { 114, 0x0b, true, "volume -" },               /* KEY_VOLUMEDOWN */
+};
+
+static int open_keypad(void)
+{
+    char path[64], buf[64];
+
+    for (int i = 0; i < 16; i++) {
+        int fd, n, maj, mnr;
+        snprintf(path, sizeof(path), "/sys/class/input/event%d/device/name", i);
+        if ((fd = syscall(5, path, O_RDONLY, 0)) < 0)
+            continue;
+        n = syscall(3, fd, buf, sizeof(buf) - 1);
+        syscall(6, fd);
+        if (n <= 0 || strncmp(buf, "htcleo-keypad", 13))
+            continue;
+        snprintf(path, sizeof(path), "/sys/class/input/event%d/dev", i);
+        if ((fd = syscall(5, path, O_RDONLY, 0)) < 0)
+            return -1;
+        n = syscall(3, fd, buf, sizeof(buf) - 1);
+        syscall(6, fd);
+        buf[n > 0 ? n : 0] = 0;
+        maj = atoi(buf);
+        mnr = atoi(strchr(buf, ':') ? strchr(buf, ':') + 1 : buf);
+        unlink("/hd2/keypad");
+        if (syscall(14, "/hd2/keypad", 0020600, maj << 8 | mnr) < 0)  /* mknod */
+            return -1;
+        return syscall(5, "/hd2/keypad", O_RDONLY, 0);
+    }
+    return -1;
+}
+
+static void *keypad_thread(void *arg)
+{
+    int master = (int)(intptr_t)arg, fd = open_keypad();
+    struct { uint32_t sec, usec; uint16_t type, code; int32_t value; } ev;
+
+    if (fd < 0) {
+        hd2tv_log("micom: no HD2 keypad");
+        return 0;
+    }
+    int held = -1;                              /* a repeating button down */
+
+    for (;;) {
+        /* the keypad driver does not repeat: held buttons that should, do */
+        struct { int fd; short events, revents; } pfd = { fd, 1, 0 };
+        int r = syscall(168, &pfd, 1, held < 0 ? -1 : 150);         /* poll */
+        if (r == 0) {
+            send_key(master, buttons[held].tv, buttons[held].name);
+            continue;
+        }
+        if (r < 0 || syscall(3, fd, &ev, sizeof(ev)) != sizeof(ev))
+            break;
+        if (ev.type != 1)                       /* EV_KEY */
+            continue;
+        for (int i = 0; i < (int)(sizeof(buttons) / sizeof(buttons[0])); i++) {
+            if (ev.code != buttons[i].code)
+                continue;
+            if (ev.value == 1) {
+                send_key(master, buttons[i].tv, buttons[i].name);
+                if (buttons[i].repeat) {
+                    held = i;
+                    /* repeats from 250 ms on, then every 150 ms */
+                    struct { int fd; short events, revents; } p2 = { fd, 1, 0 };
+                    if (syscall(168, &p2, 1, 250) == 0)
+                        send_key(master, buttons[i].tv, buttons[i].name);
+                }
+            } else if (ev.value == 0 && held == i) {
+                held = -1;
+            }
+        }
+    }
+    return 0;
+}
+
 static void *rckey_thread(void *arg)
 {
     int master = (int)(intptr_t)arg;
@@ -110,9 +200,7 @@ static void *rckey_thread(void *arg)
                 if (k < 0) {
                     hd2tv_log("micom: key %s?", line);
                 } else {
-                    uint8_t p[9] = { 0xff, 0xff, 0x10, k, 0, 0, 0, 0, 0x10 + k };
-                    hd2tv_log("micom: remote key %s (0x%02x)", line, k);
-                    syscall(4, master, p, 9);
+                    send_key(master, k, line);
                 }
             }
             n = 0;
@@ -128,4 +216,5 @@ void hd2_micom_start(int master)
 
     pthread_create(&t, 0, micom_thread, (void *)(intptr_t)master);
     pthread_create(&t, 0, rckey_thread, (void *)(intptr_t)master);
+    pthread_create(&t, 0, keypad_thread, (void *)(intptr_t)master);
 }

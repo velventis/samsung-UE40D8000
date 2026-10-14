@@ -306,6 +306,9 @@ address. That covers:
   `return`, `exit`, digits, colours...). Codes are the TV's `KEY_*` values
   (`KEY_CONTENTS` 0x79 is Smart Hub):
   `adb -s 127.0.0.1:5575 shell 'echo smarthub > /hd2/rckey'`.
+  The HD2's buttons (`htcleo-keypad`, read from `/hd2/keypad`): Windows =
+  Smart Hub, volume rocker = volume keys (repeating while held). In the
+  emulator: F1 is the Windows button, PageUp/PageDown the volume rocker.
 - **Smart Hub** (InfoLink3) starts and shows its loading indicator: it needs
   `/mtd_down` (`/mtd_rwcommon`, SD p8) mounted, which
   `/etc/Scripts/rest_mount.sh` does with the `MTD_*` variables of
@@ -327,9 +330,13 @@ address. That covers:
 
 - `TCTv::Power(3)`, `TCMW::WatchDog()`.
 - **Display:** planes from memcfg: gfx0 `0x949c0000`, gfx1 `0x95880000`, gfx2 `0x96b80000`, gfx3 `0x97480000`; cursor `0x94980000`.
-- **MICOM:** acks only; no power-on reason. Remote keys go in through
-  `/hd2/rckey` (see Working); the HD2's own keys and touch screen are not
-  wired to it yet.
+- **MICOM:** acks only; no power-on reason. The TV's command 0x18 (sent on
+  volume changes) is not acked (it is a MICOM event code), so each one waits
+  out the ack timeout.
+- **UI speed:** a few frames a second in the emulator, so short animations
+  (the volume bar's fade-in) are barely seen. exeDSP ~40% CPU, hd2gl ~5%: the
+  time goes to waits, mostly GPU read-backs at sync points (every GA op).
+  `HD2TV_LOG` 0x800 makes hd2gl log draws and uniforms.
 - **LCD vs PDP:** a GPIO read selects the panel type; the firmware currently picks PDP while the factory data says LCD.
 - **Audio output:** the AE initialises but nothing decodes or plays.
 

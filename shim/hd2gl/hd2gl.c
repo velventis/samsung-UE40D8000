@@ -27,6 +27,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "../glproto.h"
@@ -36,6 +37,7 @@
 #define MAXUNI 96
 
 static int cmd_fd, rep_fd, phys_fd;
+static int debug;               /* HD2GL_DEBUG: log draws and 3D uniforms */
 static uint8_t *buf;
 
 static void hlog(const char *fmt, ...)
@@ -78,12 +80,14 @@ static void phys_unmap(struct pmap *m)
 /* -------------------------------------------------------------- objects */
 
 static GLuint tex_r[GLP_MAXOBJ], buf_r[GLP_MAXOBJ], rb_r[GLP_MAXOBJ];
+static struct { uint8_t *data; uint32_t size; } bufs[GLP_MAXOBJ];   /* copies */
 static GLuint fb_r[GLP_MAXCTX][GLP_MAXOBJ];     /* framebuffers are per context */
 
 struct ptex {                   /* a texture from TV memory (EGLImage) */
     uint32_t phys, w, h, stride;
     int stale;
     uint32_t hash, epoch;
+    uint32_t checked;           /* ms: contents last hashed */
 };
 static struct ptex ptex[GLP_MAXOBJ];
 
@@ -116,6 +120,10 @@ struct ctx {
     int vp[4], sc[4], scissor;
     void *scratch[MAXATTR];
     size_t scratch_len[MAXATTR];
+    struct {                    /* the arrays, for where a draw lands */
+        uint32_t size, type, stride, buffer;
+        const uint8_t *data;    /* vertex 0 */
+    } arr[MAXATTR];
 };
 static struct ctx ctxs[GLP_MAXCTX];
 static int cur = -1;            /* the current context */
@@ -309,6 +317,13 @@ static void load(GLuint tex, uint32_t phys, uint32_t w, uint32_t h, uint32_t str
     phys_unmap(&m);
 }
 
+static uint32_t ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 static uint32_t hash_phys(struct ptex *t)
 {
     struct pmap m;
@@ -335,9 +350,11 @@ static void prepare_draw(void)
         struct ptex *t = id ? &ptex[id] : 0;
         if (!t || !t->phys)
             continue;
-        if (t->epoch != epoch) {
+        /* CPU writes (not reported like the GA's): looked for once a second */
+        if (t->epoch != epoch && ms() - t->checked >= 1000) {
             uint32_t h = hash_phys(t);
             t->epoch = epoch;
+            t->checked = ms();
             if (h != t->hash) {
                 t->hash = h;
                 t->stale = 1;
@@ -358,7 +375,9 @@ static void prepare_draw(void)
 }
 
 /* the target's area a draw or clear may change */
-static void mark_drawn(int whole)
+/* the target's area a draw or clear may change: the whole surface, the
+ * viewport, or (rect) a window rectangle */
+static void mark_drawn_rect(int whole, const int *rect)
 {
     struct ctx *c = &ctxs[cur];
     struct surf *s;
@@ -368,6 +387,8 @@ static void mark_drawn(int whole)
         return;
     if (whole) {
         x0 = 0; y0 = 0; x1 = s->w; y1 = s->h;
+    } else if (rect) {
+        x0 = rect[0]; y0 = rect[1]; x1 = rect[2]; y1 = rect[3];
     } else {
         x0 = c->vp[0]; y0 = c->vp[1]; x1 = c->vp[0] + c->vp[2]; y1 = c->vp[1] + c->vp[3];
     }
@@ -391,6 +412,46 @@ static void mark_drawn(int whole)
         if (x1 > s->dx1) s->dx1 = x1;
         if (y1 > s->dy1) s->dy1 = y1;
     }
+}
+
+static void mark_drawn(int whole)
+{
+    mark_drawn_rect(whole, 0);
+}
+
+/* where a 2D draw of vertices [first, first + n) lands: the 2D program puts
+ * inVertex + (-1, 1) in clip space */
+static int draw_rect(uint32_t first, uint32_t n, int *r)
+{
+    struct ctx *c = &ctxs[cur];
+    struct prog *p = c->prog ? progs[c->prog] : 0;
+    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+    int a = -1;
+
+    if (!p || shaders[p->vs].kind == KIND_3D_VERT)
+        return 0;
+    for (int i = 0; i < MAXATTR; i++)
+        if (!strcmp(p->attr[i], "inVertex"))
+            a = i;
+    if (a < 0 || c->arr[a].type != GL_FLOAT || c->arr[a].size < 2 || !c->arr[a].data)
+        return 0;
+    for (uint32_t v = first; v < first + n; v++) {
+        const float *f = (const float *)(c->arr[a].data + (size_t)v * c->arr[a].stride);
+        float x = f[0] - 1, y = f[1] + 1;
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+    }
+    r[0] = (int)(c->vp[0] + (x0 + 1) * 0.5f * c->vp[2]) - 1;
+    r[1] = (int)(c->vp[1] + (y0 + 1) * 0.5f * c->vp[3]) - 1;
+    r[2] = (int)(c->vp[0] + (x1 + 1) * 0.5f * c->vp[2]) + 2;
+    r[3] = (int)(c->vp[1] + (y1 + 1) * 0.5f * c->vp[3]) + 2;
+    if (r[0] < c->vp[0]) r[0] = c->vp[0];
+    if (r[1] < c->vp[1]) r[1] = c->vp[1];
+    if (r[2] > c->vp[0] + c->vp[2]) r[2] = c->vp[0] + c->vp[2];
+    if (r[3] > c->vp[1] + c->vp[3]) r[3] = c->vp[1] + c->vp[3];
+    return 1;
 }
 
 /* drawn surfaces back to TV memory */
@@ -488,6 +549,11 @@ static void gl_call(const uint32_t *a)
             glDeleteBuffers(1, &buf_r[a[1]]);
             buf_r[a[1]] = 0;
         }
+        if (a[1] < GLP_MAXOBJ) {
+            free(bufs[a[1]].data);
+            bufs[a[1]].data = 0;
+            bufs[a[1]].size = 0;
+        }
         break;
     case F_ActiveTexture: c->unit = (a[1] - GL_TEXTURE0) & (MAXUNIT - 1); glActiveTexture(a[1]); break;
     case F_BindTexture:
@@ -579,6 +645,12 @@ static void uniform(const uint32_t *a)
     if (p->loc[l] == -2)
         p->loc[l] = glGetUniformLocation(p->real, p->uni[l]);
     GLint loc = p->loc[l];
+    if (debug) {
+        const float *f = v;
+        hlog("uniform %s (%d x %d): %g %g %g %g", p->uni[l], n, count,
+             kind == 1 ? (float)((const int *)v)[0] : f[0], n > 1 ? f[1] : 0,
+             n > 2 ? f[2] : 0, n > 3 ? f[3] : 0);
+    }
     if (loc < 0)
         return;
     switch (kind) {
@@ -615,13 +687,19 @@ static void attrib(const uint32_t *a)
             c->scratch_len[i] = bytes;
         }
         memcpy(c->scratch[i], a + 9, bytes);
+        c->arr[i].data = (uint8_t *)c->scratch[i] - (size_t)a[7] * a[4];
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glVertexAttribPointer(i, a[1], a[2], a[3], a[4],
                               (uint8_t *)c->scratch[i] - (size_t)a[7] * a[4]);
     } else {
+        c->arr[i].data = a[5] < GLP_MAXOBJ && bufs[a[5]].data && a[6] < bufs[a[5]].size ?
+                         bufs[a[5]].data + a[6] : 0;
         glBindBuffer(GL_ARRAY_BUFFER, real_buf(a[5]));
         glVertexAttribPointer(i, a[1], a[2], a[3], a[4], (void *)(uintptr_t)a[6]);
     }
+    c->arr[i].size = a[1];
+    c->arr[i].type = a[2];
+    c->arr[i].stride = a[4];
     glBindBuffer(GL_ARRAY_BUFFER, real_buf(c->array_buf));
 }
 
@@ -729,8 +807,24 @@ static void run(uint32_t n)
             epoch++;
             break;
         case GLP_CALL: gl_call(a); break;
-        case GLP_BUFFER_DATA: glBufferData(a[0], a[1], a + 3, a[2]); break;
-        case GLP_BUFFER_SUBDATA: glBufferSubData(a[0], a[1], a[2], a + 3); break;
+        case GLP_BUFFER_DATA: {
+            uint32_t id = a[0] == GL_ARRAY_BUFFER ? ctxs[cur].array_buf : ctxs[cur].elem_buf;
+            if (id && id < GLP_MAXOBJ) {
+                free(bufs[id].data);
+                bufs[id].data = malloc(a[1] ? a[1] : 1);
+                memcpy(bufs[id].data, a + 3, a[1]);
+                bufs[id].size = a[1];
+            }
+            glBufferData(a[0], a[1], a + 3, a[2]);
+            break;
+        }
+        case GLP_BUFFER_SUBDATA: {
+            uint32_t id = a[0] == GL_ARRAY_BUFFER ? ctxs[cur].array_buf : ctxs[cur].elem_buf;
+            if (id && id < GLP_MAXOBJ && bufs[id].data && a[1] + a[2] <= bufs[id].size)
+                memcpy(bufs[id].data + a[1], a + 3, a[2]);
+            glBufferSubData(a[0], a[1], a[2], a + 3);
+            break;
+        }
         case GLP_TEX_IMAGE:
             glTexImage2D(GL_TEXTURE_2D, a[0], GL_RGBA, a[1], a[2], 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
             break;
@@ -757,9 +851,20 @@ static void run(uint32_t n)
         case GLP_UNIFORM: uniform(a); break;
         case GLP_ATTRIB: attrib(a); break;
         case GLP_DRAW_ARRAYS:
+            if (debug) {
+                struct ctx *c = &ctxs[cur];
+                struct prog *p = c->prog ? progs[c->prog] : 0;
+                hlog("draw %s mode %u n %u vp %d,%d %dx%d scissor %d fb %u surf %u tex %u (%08x)",
+                     p && shaders[p->vs].kind == KIND_3D_VERT ? "3D" : "2D", a[0], a[2],
+                     c->vp[0], c->vp[1], c->vp[2], c->vp[3], c->scissor, c->fb, c->surf,
+                     c->bound[0], ptex[c->bound[0]].phys);
+            }
             prepare_draw();
             glDrawArrays(a[0], a[1], a[2]);
-            mark_drawn(0);
+            {
+                int r[4];
+                mark_drawn_rect(0, draw_rect(a[1], a[2], r) ? r : 0);
+            }
             break;
         case GLP_DRAW_ELEMENTS:
             prepare_draw();
@@ -797,6 +902,7 @@ int main(int argc, char **argv)
 
     if (argc != 5)
         return 1;
+    debug = getenv("HD2GL_DEBUG") != 0;
     cmd_fd = atoi(argv[1]);
     rep_fd = atoi(argv[2]);
     phys_fd = atoi(argv[4]);

@@ -95,7 +95,8 @@ static bool start(void)
     snprintf(a3, sizeof(a3), "%d", bfd);
     snprintf(a4, sizeof(a4), "%d", pfd);
     char *env[] = { "LD_LIBRARY_PATH=/system/lib/egl:/system/lib",
-                    "ANDROID_ROOT=/system", "ANDROID_DATA=/data", 0 };
+                    "ANDROID_ROOT=/system", "ANDROID_DATA=/data",
+                    hd2tv_log_mask & 0x800 ? "HD2GL_DEBUG=1" : 0, 0 };
     long pid = fork();
     if (pid == 0) {
         /* only hd2gl's own ends: it sees the shim go when the pipe closes */
