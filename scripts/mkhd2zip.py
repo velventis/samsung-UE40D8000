@@ -74,7 +74,10 @@ The first boot takes several minutes (the TV writes its factory defaults),
 then shows the TV's "No signal" message. With no TV hardware there is no
 picture source; Smart Hub works offline (its home screen).
 
-Remote control: over USB with adb (the TV system runs adbd):
+The HD2's buttons: the Windows button opens Smart Hub, the volume rocker
+is the TV's volume (hold to repeat).
+
+More remote keys over USB with adb (the TV system runs adbd):
   adb shell 'echo smarthub > /hd2/rckey'
 Keys: smarthub, menu, source, up, down, left, right, enter, return, exit,
 tools, info, guide, red, green, yellow, blue, 0-9, chup, chdown, volup,
