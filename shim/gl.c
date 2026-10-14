@@ -98,6 +98,9 @@ static bool start(void)
                     "ANDROID_ROOT=/system", "ANDROID_DATA=/data", 0 };
     long pid = fork();
     if (pid == 0) {
+        /* only hd2gl's own ends: it sees the shim go when the pipe closes */
+        sys(SYS_close, cp[1], 0, 0);
+        sys(SYS_close, rp[0], 0, 0);
         if (sys(SYS_chroot, (long)"/hd2/android", 0, 0) == 0 &&
             sys(SYS_chdir, (long)"/", 0, 0) == 0)
             for (int i = 0; i < 2; i++) {

@@ -370,3 +370,24 @@ ssize_t write(int fd, const void *buf, size_t n)
     }
     return real_write(fd, buf, n);
 }
+
+/* --------------------------------------------------------------- times */
+
+/*
+ * times(): on 32-bit ARM, jiffies start 5 minutes before 0, so the clock
+ * ticks the kernel returns pass through -4095..-1 about 5 minutes after
+ * boot, which glibc 2.11 takes for an error (EFAULT) and answers by
+ * touching the buffer: PCTime::Tick (times(NULL)) crashes.  Here the ticks
+ * (100 Hz, as sysconf(_SC_CLK_TCK)) come from CLOCK_MONOTONIC instead.
+ */
+struct tms_ { long utime, stime, cutime, cstime; };
+
+long times(struct tms_ *buf)
+{
+    struct timespec ts;
+
+    if (buf)
+        syscall(43, buf);                       /* sys_times fills it */
+    syscall(263, CLOCK_MONOTONIC, &ts);         /* clock_gettime */
+    return 1000 + ts.tv_sec * 100 + ts.tv_nsec / 10000000;
+}

@@ -37,8 +37,12 @@ ROM = os.environ.get('HD2_ROM', os.path.join(HD2, 'firmware/rom/system'))
 ZIMAGE = os.path.join(TOP, 'kbuild/arch/arm/boot/zImage')
 
 # HD2 MTD order from cLK 1.4: misc recovery sboot boot system cache userdata
+# mem=: EBI1 bank 0 (to a 4 MiB boundary: banks before another must end on
+# one), and the emulator's RAM between it
+# and the PMEM pools (0x3B700000), 183 MiB that the TV's memory needs
 CMDLINE = ('x=/dev/tfsr6 root=/dev/mtdblock4 rootfstype=squashfs ro '
-           'console=ttyMSM0,115200n8 init=/sbin/init' +
+           'console=ttyMSM0,115200n8 init=/sbin/init '
+           'mem=0x1E400000@0x11800000 mem=0x0B700000@0x30000000' +
            (' ' + os.environ['CMDLINE_EXTRA'] if os.environ.get('CMDLINE_EXTRA') else ''))
 
 # rootfs device nodes that change: (major, minor)
