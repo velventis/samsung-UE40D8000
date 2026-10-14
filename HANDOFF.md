@@ -302,12 +302,15 @@ address. That covers:
   `/etc/Scripts/rest_mount.sh` does with the `MTD_*` variables of
   `/etc/profile` (`devrun.sh` exports them), and copies its manager widget
   from `/mtd_rocommon/infolink` (the D5520's).
-  - **Blocked:** the widget's files (`*.cmk`) are AES-128-CBC with a "common
-    key" (`DecryptWithCommonKey`, `CMK_to_membuf`): one of three 32-byte
-    key+IV blobs in exeDSP (`0x358ac5c`, from `FUN_0152215c`) decrypted by the
-    SE with its efuse key (key mode 3). That key is in the SDP1004's silicon;
-    without it the blob is used as it is and `config.xml.cmk` comes out as
-    garbage (`DM_LoadXMLFile: DOM tree creation Failed`).
+  - The widget's files (`*.cmk`) are AES-128-CBC with a "common key"
+    (`DecryptWithCommonKey`, `CMK_to_membuf`): one of three 32-byte key+IV
+    blobs in exeDSP (`0x358ac5c`, from `FUN_0152215c`) decrypted by the SE
+    with its efuse key (key mode 3). That key is in the silicon, but the
+    result is SamyGO's published .cmk key and IV
+    (https://forum.samygo.tv/viewtopic.php?t=4994): `crypto.c` answers that
+    job with it (`efuse_answers`). The Smart Hub home screen then loads.
+  - `CBrokerProxyEmp::Execute: connect() failed (111)`: Smart Hub's EMP
+    broker service is not running; not looked at yet.
   - Secure storage (`/mtd_rwarea/security`, `/mtd_rwcommon/psa`) written while
     the SE did not encrypt has to be deleted once (done on this card).
 

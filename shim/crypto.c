@@ -4,8 +4,9 @@
  * libSDAL hands cipher jobs to uldSe_SetCpDesDerived(se, job), which
  * programs the engine and runs its DMA a chunk at a time.  Here the job is
  * done in software instead, for keys given by software (key mode 1); the
- * engine's own keys (hardware key modes) are secret, those jobs go to the
- * engine as before (which, emulated, leaves the data as it is).
+ * engine's own keys (hardware key modes) are secret: those jobs get a known
+ * answer (efuse_answers) or go to the engine as before (which, emulated,
+ * leaves the data as it is).
  *
  * The job (from CCP_HI::hdiEncrypt/hdiDecrypt and the lldSe_* setters):
  *   [0] mode: 0 DES ECB, 1 DES CBC, 2 3DES ECB, 3 3DES CBC,
@@ -267,6 +268,35 @@ static void run(const struct cipher *c, int chain, bool dec, const uint8_t *in,
     }
 }
 
+/*
+ * The engine's own (efuse) key cannot be had, but what it turns some
+ * inputs into is known.  exeDSP's widget "common key" (DecryptWithCommonKey,
+ * for Smart Hub's *.cmk files) is a 32-byte key and IV that the engine
+ * decrypts with its efuse key; the result is the AES-128-CBC key and IV
+ * SamyGO published for .cmk files (forum.samygo.tv, viewtopic.php?t=4994).
+ */
+static const struct { uint8_t in[32], out[32]; } efuse_answers[] = {
+    { { 0xe0, 0xc3, 0x04, 0xf5, 0x14, 0xb9, 0xb6, 0xfc, 0xe2, 0x87, 0x07, 0x2f, 0x09, 0x8a, 0x93, 0xdd,
+        0x80, 0x46, 0xd3, 0xce, 0x25, 0xd8, 0xa3, 0xac, 0xa7, 0x3c, 0xde, 0x34, 0x24, 0x07, 0x08, 0xd6 },
+      { 0xb1, 0xd5, 0xf1, 0x22, 0xe7, 0x5d, 0x75, 0x7c, 0x79, 0xf4, 0x88, 0x86, 0xd4, 0x2f, 0x8e, 0x1a,
+        0xbf, 0xe9, 0x32, 0xf9, 0x27, 0x3d, 0xc2, 0xa0, 0xdf, 0xc9, 0x3f, 0x0b, 0x8e, 0x7a, 0xc7, 0xc2 } },
+};
+
+static bool efuse_answer(const uint32_t *job)
+{
+    const uint8_t *in = (const uint8_t *)(uintptr_t)job[2];
+    uint8_t *out = (uint8_t *)(uintptr_t)job[4];
+
+    if (job[1] || job[3] != 32 || !in || !out)
+        return false;
+    for (unsigned i = 0; i < sizeof(efuse_answers) / sizeof(efuse_answers[0]); i++)
+        if (!memcmp(in, efuse_answers[i].in, 32)) {
+            memcpy(out, efuse_answers[i].out, 32);
+            return true;
+        }
+    return false;
+}
+
 uint32_t uldSe_SetCpDesDerived(void *se, uint32_t *job)
 {
     static uint32_t (*real)(void *, uint32_t *);
@@ -291,6 +321,10 @@ uint32_t uldSe_SetCpDesDerived(void *se, uint32_t *job)
         if (chain && job[6])
             memcpy(iv, (const void *)(uintptr_t)job[6], 8);
     } else if (mode <= 9) {                     /* AES */
+        if (job[6] != 1 && efuse_answer(job)) {
+            hd2tv_log("se: the efuse key's answer for a known input");
+            return 0;
+        }
         if (job[6] != 1 || !job[5]) {
             static bool told;
             if (!told && (told = true))
