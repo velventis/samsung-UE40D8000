@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package the Samsung TV firmware for a real HTC HD2 booted by cLK 1.5.
+"""Package the Samsung TV firmware for a real HTC HD2 booted by cLK.
 
   scripts/mkhd2zip.py [-o out/hd2-samsung-ue40d8000.zip]
 
@@ -7,11 +7,13 @@ The zip holds:
   boot.img            the HD2 kernel (kbuild/) and its command line
   boot-extramem.img   the same, also using RAM at 0x30000000-0x3B6FFFFF (see
                       README: unverified on a real HD2)
-  system.img          the TV's root filesystem (out/rootfs.img, SquashFS)
   sdcard.img          the microSD card (out/sdcard.img): the TV's eMMC and
-                      OneNAND partitions
-  flash.sh, flash.bat cLK 1.5 fastboot: the partition layout, boot, system
+                      OneNAND partitions, and its root filesystem (p11)
+  flash.sh, flash.bat fastboot: boot.img to cLK's boot partition
   README.txt
+
+Only the boot partition is written, so any cLK partition layout works (1.4
+included, which cannot repartition over fastboot).
 
 Build first: scripts/build-kernel.sh, scripts/mkimages.py (all steps).
 """
@@ -25,13 +27,9 @@ HD2 = os.path.expanduser('~/clones/hd2-qemu')
 sys.path.insert(0, os.path.join(HD2, 'tools'))
 import hd2_mknand as mk  # noqa: E402
 
-BASE_CMDLINE = ('x=/dev/tfsr6 root=/dev/mtdblock4 rootfstype=squashfs ro '
+BASE_CMDLINE = ('x=/dev/tfsr6 root=/dev/mmcblk0p11 rootwait rootfstype=squashfs ro '
                 'console=ttyMSM0,115200n8 init=/sbin/init')
 EXTRA_MEM = ' mem=0x1E400000@0x11800000 mem=0x0B700000@0x30000000'
-
-# cLK 1.5 partitions, in order: the kernel finds the TV's root at mtdblock4
-LAYOUT = [('misc', 1), ('recovery', 5), ('sboot', 5), ('boot', 5),
-          ('system', None), ('cache', 5), ('userdata', 0)]
 
 README = """\
 Samsung UE40D8000 (2011) TV firmware on the HTC HD2
@@ -45,28 +43,26 @@ This has only run in an HD2 emulator (hd2-qemu), never on a real HD2.
 
 What you need
 -------------
-- An HD2 with HSPL and cLK 1.5 (LEOIMG.nbh flashed with DAF.exe).
+- An HD2 with HSPL and cLK (1.4 or later; LEOIMG.nbh flashed with DAF.exe).
 - fastboot (Android platform-tools) on your computer.
 - A microSD card of at least 1 GB. ALL ITS DATA WILL BE LOST.
-- This replaces what is on the HD2's NAND (Android, recovery). Back up first.
+- Only cLK's boot partition is replaced (the kernel of the Android you have
+  installed): your system and data partitions are left alone.
 
 1. The microSD card
 -------------------
 Write sdcard.img to the card (whole card, not a partition):
   Linux:   sudo dd if=sdcard.img of=/dev/sdX bs=4M conv=fsync
   Windows: balenaEtcher or Win32 Disk Imager
-Put the card in the HD2.
+Put the card in the HD2. It holds everything but the kernel, the TV's root
+filesystem included.
 
-2. The NAND
------------
+2. The kernel
+-------------
 Start the HD2 into cLK (hold Back while powering on) and choose FASTBOOT;
-connect USB. Then run flash.sh (Linux/macOS) or flash.bat (Windows). It:
-  - replaces cLK's partition table with
-      misc 1, recovery 5, sboot 5, boot 5, system {system_mb}, cache 5,
-      userdata (the rest) MiB
-    and commits it (the HD2 restarts into cLK: choose FASTBOOT again when
-    the script asks),
-  - flashes boot.img and system.img and reboots.
+connect USB. Then run flash.sh (Linux/macOS) or flash.bat (Windows), or:
+  fastboot flash boot boot.img
+  fastboot reboot
 
 3. First boot
 -------------
@@ -94,30 +90,16 @@ only knowing it may not boot (reflash boot.img then).
 
 Back to Android
 ---------------
-In cLK fastboot: fastboot oem part-create-default, then install your ROM.
+Flash your ROM's boot.img again (fastboot flash boot boot.img, or reinstall
+the ROM from recovery), and put the SD card you use with Android back.
 """
 
 
-def fastboot_script(win, system_mb):
-    lines = []
-    say = (lambda s: 'echo %s' % s) if win else (lambda s: "echo '%s'" % s)
-    lines.append('@echo off' if win else '#!/bin/sh\nset -e\ncd "$(dirname "$0")"')
-    lines.append(say('Partition table (cLK 1.5)'))
-    lines.append('fastboot oem part-clear')
-    for name, mb in LAYOUT:
-        lines.append('fastboot oem part-add %s:%d' % (name, system_mb if mb is None else mb))
-    lines.append('fastboot oem part-list')
-    lines.append('fastboot oem part-commit')
+def fastboot_script(win):
     if win:
-        lines.append('echo The HD2 restarts: choose FASTBOOT in cLK again, then')
-        lines.append('pause')
-    else:
-        lines.append(say('The HD2 restarts: choose FASTBOOT in cLK again, then press Enter'))
-        lines.append('read dummy')
-    lines.append('fastboot flash boot boot.img')
-    lines.append('fastboot flash system system.img')
-    lines.append('fastboot reboot')
-    return ('\r\n' if win else '\n').join(lines) + ('\r\n' if win else '\n')
+        return '@echo off\r\nfastboot flash boot boot.img\r\nfastboot reboot\r\n'
+    return ('#!/bin/sh\nset -e\ncd "$(dirname "$0")"\n'
+            'fastboot flash boot boot.img\nfastboot reboot\n')
 
 
 def main():
@@ -125,20 +107,12 @@ def main():
     ap.add_argument('-o', default=os.path.join(TOP, 'out/hd2-samsung-ue40d8000.zip'))
     a = ap.parse_args()
     zimage = open(os.path.join(TOP, 'kbuild/arch/arm/boot/zImage'), 'rb').read()
-    rootfs = open(os.path.join(TOP, 'out/rootfs.img'), 'rb').read()
-    # whole NAND pages; cLK takes an image whose size is a multiple of
-    # page + spare (2112) for a YAFFS one: pad by a page if it is one
-    system = rootfs + b'\0' * (-len(rootfs) % 2048)
-    if len(system) % 2112 == 0:
-        system += b'\0' * 2048
-    system_mb = (len(system) >> 20) + 2
     files = {
         'boot.img': mk.mkbootimg(zimage, b'', BASE_CMDLINE),
         'boot-extramem.img': mk.mkbootimg(zimage, b'', BASE_CMDLINE + EXTRA_MEM),
-        'system.img': system,
-        'flash.sh': fastboot_script(False, system_mb).encode(),
-        'flash.bat': fastboot_script(True, system_mb).encode(),
-        'README.txt': README.format(system_mb=system_mb).encode(),
+        'flash.sh': fastboot_script(False).encode(),
+        'flash.bat': fastboot_script(True).encode(),
+        'README.txt': README.encode(),
     }
     with zipfile.ZipFile(a.o, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for name, data in files.items():

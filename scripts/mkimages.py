@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Build the HD2 images that boot the Samsung UE40D8000 (Genoa-P) firmware.
 
-  out/nand.img    HD2 NAND: cLK 1.4, boot.img (HD2 kernel from kbuild/),
-                  "system" = the TV rootfs (squashfs, patched)
+  out/nand.img    HD2 NAND: cLK 1.4, boot.img (HD2 kernel from kbuild/)
+  out/rootfs.img  the TV rootfs (squashfs, patched), on the SD card's p11
   out/rocommon.img  /mtd_rocommon: the UE46D5520's (dec/d5520-rocommon.img,
                   from scripts/nand/extract_rocommon.py) with the D8000's
                   bitmap names added, converted from same-named images
   out/sdcard.img  microSD standing in for the TV's eMMC and OneNAND:
                     p1 swu  p3 emanual  p5 contents  (FAT)  p2 rocommon
                     p6 appext (squashfs)  p7 appext 2nd  p8 rwcommon (FAT)
-                    p9 exe (squashfs)  p10 rwarea (FAT)
+                    p9 exe (squashfs)  p10 rwarea (FAT)  p11 rootfs (squashfs)
                   The rootfs's /dev/stl0/13 (exe) and /dev/stl0/12 (rwarea)
                   nodes point at p9 and p10.
 
@@ -36,11 +36,12 @@ LK = os.path.join(HD2, 'firmware/lk-user.bin')
 ROM = os.environ.get('HD2_ROM', os.path.join(HD2, 'firmware/rom/system'))
 ZIMAGE = os.path.join(TOP, 'kbuild/arch/arm/boot/zImage')
 
-# HD2 MTD order from cLK 1.4: misc recovery sboot boot system cache userdata
+# root on the SD card (p11), not NAND: cLK's partition tables differ between
+# installs, the SD card's is ours
 # mem=: EBI1 bank 0 (to a 4 MiB boundary: banks before another must end on
 # one), and the emulator's RAM between it
 # and the PMEM pools (0x3B700000), 183 MiB that the TV's memory needs
-CMDLINE = ('x=/dev/tfsr6 root=/dev/mtdblock4 rootfstype=squashfs ro '
+CMDLINE = ('x=/dev/tfsr6 root=/dev/mmcblk0p11 rootwait rootfstype=squashfs ro '
            'console=ttyMSM0,115200n8 init=/sbin/init '
            'mem=0x1E400000@0x11800000 mem=0x0B700000@0x30000000' +
            (' ' + os.environ['CMDLINE_EXTRA'] if os.environ.get('CMDLINE_EXTRA') else ''))
@@ -60,6 +61,7 @@ SD_PARTS = [
     (1, 16, 'fat'), (2, None, 'out/rocommon.img'), (3, 16, 'fat'),
     (5, 64, 'fat'), (6, None, 'dec/appext.img'), (7, 4, 'fat'),
     (8, 64, 'fat'), (9, None, 'out/exe.img'), (10, 32, 'fat'),
+    (11, None, 'out/rootfs.img'),
 ]
 
 
@@ -202,8 +204,7 @@ def build_rocommon():
 def build_nand():
     lk = bytearray(open(LK, 'rb').read())
     off, parts = mk.clk14_ptable(lk)
-    rootfs = open(os.path.join(OUT, 'rootfs.img'), 'rb').read()
-    want = {'boot': 5, 'system': (len(rootfs) >> 20) + 2, 'cache': 1}
+    want = {'boot': 5, 'system': 1, 'cache': 1}
     for p in parts:
         if p[0] in want and p[2] != want[p[0]]:
             struct.pack_into('<I', lk, p[3], want[p[0]])
@@ -228,7 +229,6 @@ def build_nand():
 
     boot = mk.mkbootimg(open(ZIMAGE, 'rb').read(), b'', CMDLINE)
     put('boot', boot)
-    put('system', rootfs)
     nand.close()
     print('out/nand.img, cmdline "%s"' % CMDLINE)
 

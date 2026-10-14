@@ -16,7 +16,7 @@ own Linux kernel:
 |---|---|
 | Bootloader | cLK 1.4 (`~/clones/hd2-qemu/firmware/lk-user.bin`) |
 | Kernel | HD2 2.6.32 kernel, branch `samsung-tv` (worktree `kernel/`) |
-| Root fs | The TV's own `rootfs.img` (SquashFS) on HD2 NAND `system` (`mtdblock4`) |
+| Root fs | The TV's own `rootfs.img` (SquashFS) on SD p11 (`root=/dev/mmcblk0p11 rootwait`) |
 | TV app | Original `exeDSP` + `libSDAL.so` from `exe.img` |
 | TV drivers | `shim/libhd2tv.so`, preloaded: emulates `/dev/mem`, `samdrv.ko`'s `/dev/sam/*` and the TV kernel's `/dev/sdp_*` |
 
@@ -63,11 +63,13 @@ scripts/stop.sh                  # stop this checkout's emulator only
 ### A real HD2
 
 `scripts/mkhd2zip.py` packages `out/hd2-samsung-ue40d8000.zip` for an HD2
-with cLK 1.5: `boot.img` (without `hd2noexe`, the board's memory map),
-`boot-extramem.img` (also RAM at 0x30000000, unverified on hardware),
-`system.img`, `sdcard.img`, fastboot scripts for the partition layout
-(`misc recovery sboot boot system cache userdata`: the root is mtdblock4) and
-a README. Never tried on a real HD2. Build the kernel and all images first.
+with any cLK (1.4 included): `boot.img` (without `hd2noexe`, the board's
+memory map), `boot-extramem.img` (also RAM at 0x30000000, unverified on
+hardware), `sdcard.img` (root filesystem on p11), fastboot scripts that only
+flash `boot` and a README. The root is on the SD card because cLK 1.4 cannot
+repartition and its layouts differ between installs. HtcLeoPkg UEFI was
+dropped: its Booter passes no NAND partitions, and the uefi.img tried was a
+`--screen` build that halts after the NandDxe self test. Never tried on a real HD2. Build the kernel and all images first.
 
 ### Fast dev loop
 
