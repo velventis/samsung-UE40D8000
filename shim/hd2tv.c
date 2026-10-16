@@ -138,7 +138,7 @@ __attribute__((constructor)) static void hd2tv_init(void)
 
 void *hd2tv_phys(uint32_t pa, uint32_t len)
 {
-    void *p = real_mmap64(0, len, PROT_READ | PROT_WRITE, MAP_SHARED, phys_fd,
+    void *p = real_mmap64(0, len + (pa & 0xfff), PROT_READ | PROT_WRITE, MAP_SHARED, phys_fd,
                           pa & ~0xfffu);
 
     return p == MAP_FAILED ? 0 : (char *)p + (pa & 0xfff);
@@ -162,7 +162,7 @@ static int open_common(const char *path, int flags, mode_t mode, bool is64)
             hd2tv_log("open /dev/mem -> %d", fd);
         return fd;
     }
-    if (path && (!strcmp(path, "/dev/ttyS1") || !strcmp(path, "/dev/ttyS3"))) {
+    if (path && (!strcmp(path, "/dev/ttyS1") || !strcmp(path, "/dev/ttyS2") || !strcmp(path, "/dev/ttyS3"))) {
         /* the MICOM's and the debug UART: ptys whose masters stay open;
          * the MICOM's answers acks, the debug UART's stays silent */
         int master = -1;
@@ -177,6 +177,8 @@ static int open_common(const char *path, int flags, mode_t mode, bool is64)
             fd = real_open(pts, flags, mode);
             if (!strcmp(path, "/dev/ttyS1"))
                 hd2_micom_start(master);
+            else
+                hd2_debug_uart_start(master);
             hd2tv_log("open %s -> %d (%s%s)", path, fd, pts,
                       strcmp(path, "/dev/ttyS1") ? ", silent" : ", MICOM");
             return fd;

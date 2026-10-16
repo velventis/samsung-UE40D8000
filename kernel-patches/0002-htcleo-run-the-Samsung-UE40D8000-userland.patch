@@ -1,0 +1,129 @@
+From 9328e995c5ad12fa4d11305eff92da34fdc58dd8 Mon Sep 17 00:00:00 2001
+From: davig998 <davimarchesiprimo@gmail.com>
+Date: Tue, 13 Oct 2026 17:06:54 -0300
+Subject: [PATCH 2/3] htcleo: run the Samsung UE40D8000 userland
+
+- msm_serial: ttyMSM on 204:64 (the TV's ttyS0-3)
+- mmc block: 16 minors per card (mmcblk0p1-p15)
+- vfat registered as "rfs" too (Samsung RFS)
+- htcleo_nand: sub-page reads through a bounce buffer (mtdblock)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/mmc/card/block.c          |  3 ++-
+ drivers/mtd/devices/htcleo_nand.c | 36 +++++++++++++++++++++++++++++++
+ drivers/serial/msm_serial.c       |  3 +++
+ fs/fat/namei_vfat.c               | 16 +++++++++++++-
+ 4 files changed, 56 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/mmc/card/block.c b/drivers/mmc/card/block.c
+index 8f92a604..333768e8 100644
+--- a/drivers/mmc/card/block.c
++++ b/drivers/mmc/card/block.c
+@@ -51,7 +51,8 @@ MODULE_ALIAS("mmc:block");
+ #if defined(CONFIG_ARCH_MSM7X30)
+ #define MMC_SHIFT	5
+ #else
+-#define MMC_SHIFT	3
++/* 16 minors: the Samsung TV userland names mmcblk0p1-p15 179:1-15 */
++#define MMC_SHIFT	4
+ #endif
+ #define MMC_NUM_MINORS	(256 >> MMC_SHIFT)
+ 
+diff --git a/drivers/mtd/devices/htcleo_nand.c b/drivers/mtd/devices/htcleo_nand.c
+index 5c05ccc2..6840d6e8 100755
+--- a/drivers/mtd/devices/htcleo_nand.c
++++ b/drivers/mtd/devices/htcleo_nand.c
+@@ -993,6 +993,42 @@ msm_nand_read(struct mtd_info *mtd, loff_t from, size_t len,
+ 	printk("msm_nand_read %llx %d\n", from, len);
+ #endif
+ 
++	if ((from | len) & (mtd->writesize - 1)) {
++		/* sub-page reads (mtdblock's 512-byte sectors): whole pages
++		 * through a bounce buffer */
++		u_char *page = kmalloc(mtd->writesize, GFP_KERNEL);
++		size_t done = 0;
++
++		if (!page)
++			return -ENOMEM;
++		ret = 0;
++		while (done < len) {
++			loff_t p = (from + done) & ~(loff_t)(mtd->writesize - 1);
++			size_t o = (from + done) - p;
++			size_t n = min_t(size_t, len - done, mtd->writesize - o);
++			int r;
++
++			ops.mode = MTD_OOB_PLACE;
++			ops.len = mtd->writesize;
++			ops.retlen = 0;
++			ops.ooblen = 0;
++			ops.datbuf = page;
++			ops.oobbuf = NULL;
++			r = msm_nand_read_oob(mtd, p, &ops);
++			if (r && r != -EUCLEAN) {
++				ret = r;
++				break;
++			}
++			if (r)
++				ret = r;
++			memcpy(buf + done, page + o, n);
++			done += n;
++		}
++		kfree(page);
++		*retlen = done;
++		return ret;
++	}
++
+ 	ops.mode = MTD_OOB_PLACE;
+ 	ops.len = len;
+ 	ops.retlen = 0;
+diff --git a/drivers/serial/msm_serial.c b/drivers/serial/msm_serial.c
+index cc0712a8..522a13c3 100644
+--- a/drivers/serial/msm_serial.c
++++ b/drivers/serial/msm_serial.c
+@@ -887,6 +887,9 @@ static struct uart_driver msm_uart_driver = {
+ 	.owner = THIS_MODULE,
+ 	.driver_name = "msm_serial",
+ 	.dev_name = "ttyMSM",
++	/* the Samsung TV userland's ttyS0-3 (low-density serial 204:64-67) */
++	.major = 204,
++	.minor = 64,
+ 	.nr = UART_NR,
+ 	.cons = MSM_CONSOLE,
+ };
+diff --git a/fs/fat/namei_vfat.c b/fs/fat/namei_vfat.c
+index 72646e2c..651db762 100644
+--- a/fs/fat/namei_vfat.c
++++ b/fs/fat/namei_vfat.c
+@@ -1072,13 +1072,27 @@ static struct file_system_type vfat_fs_type = {
+ 	.fs_flags	= FS_REQUIRES_DEV,
+ };
+ 
++/* Samsung's RFS (FAT on their flash translation layer) as plain vfat */
++static struct file_system_type rfs_fs_type = {
++	.owner		= THIS_MODULE,
++	.name		= "rfs",
++	.get_sb		= vfat_get_sb,
++	.kill_sb	= kill_block_super,
++	.fs_flags	= FS_REQUIRES_DEV,
++};
++
+ static int __init init_vfat_fs(void)
+ {
+-	return register_filesystem(&vfat_fs_type);
++	int err = register_filesystem(&vfat_fs_type);
++
++	if (!err)
++		register_filesystem(&rfs_fs_type);
++	return err;
+ }
+ 
+ static void __exit exit_vfat_fs(void)
+ {
++	unregister_filesystem(&rfs_fs_type);
+ 	unregister_filesystem(&vfat_fs_type);
+ }
+ 
+-- 
+2.55.0
+

@@ -1,0 +1,30 @@
+From b5fc3c0723b1055b64abaf6efb145ec09579aeb6 Mon Sep 17 00:00:00 2001
+From: davig998 <davimarchesiprimo@gmail.com>
+Date: Tue, 13 Oct 2026 17:14:37 -0300
+Subject: [PATCH 3/3] msm_serial: take MISR as ISR & IMR
+
+The emulated HD2's UART returns CR at 0x10, so RX interrupts were never
+handled; ISR & IMR is the same value on the real part.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/serial/msm_serial.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/serial/msm_serial.c b/drivers/serial/msm_serial.c
+index 522a13c3..560cba6d 100644
+--- a/drivers/serial/msm_serial.c
++++ b/drivers/serial/msm_serial.c
+@@ -319,7 +319,8 @@ static irqreturn_t msm_irq(int irq, void *dev_id)
+ 
+ 	spin_lock(&port->lock);
+ 	clk_enable(msm_port->clk);
+-	misr = msm_read(port, UART_MISR);
++	/* ISR & IMR is MISR (the emulated HD2 has no MISR) */
++	misr = msm_read(port, UART_ISR) & msm_port->imr;
+ 	msm_write(port, 0, UART_IMR); /* disable interrupt */
+ 
+ 	if (misr & (UART_IMR_RXLEV | UART_IMR_RXSTALE))
+-- 
+2.55.0
+

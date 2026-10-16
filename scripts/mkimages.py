@@ -153,53 +153,9 @@ def build_exe():
     mksquash(dst, os.path.join(OUT, 'exe.img'), nodes)
 
 
+# use d8000 rocommon
 def build_rocommon():
-    """the D5520's rocommon, plus the images the D8000's programs name that
-    it has under another extension or in another folder"""
-    from PIL import Image
-    dst = os.path.join(WORK, 'rocommon')
-    unsquash(os.path.join(TOP, 'dec/d5520-rocommon.img'), dst)
-    imgdir = os.path.join(dst, 'Images_960x540')
-    exe = os.path.join(WORK, 'exe')
-    if not os.path.isdir(exe):
-        unsquash(os.path.join(TOP, 'dec/exe.img'), exe)
-    wanted = set()
-    for root, _, files in os.walk(exe):
-        for f in files:
-            if f == 'exeDSP' or f.endswith('.so') or '.so.' in f:
-                out = subprocess.run(['strings', '-n', '6', os.path.join(root, f)],
-                                     capture_output=True, text=True).stdout
-                for w in out.splitlines():
-                    w = w.split('Images_960x540/')[-1]
-                    if re.fullmatch(r'[\w\- ]+(/[\w\- ]+)*\.(bmp|png)', w):
-                        wanted.add(w)
-    have = {}                       # lower-case stem -> [relative paths]
-    for root, _, files in os.walk(imgdir):
-        for f in files:
-            stem, ext = os.path.splitext(f)
-            if ext.lower() in ('.png', '.bmp', '.jpg'):
-                rel = os.path.relpath(os.path.join(root, f), imgdir)
-                have.setdefault(stem.lower(), []).append(rel)
-    made = 0
-    for w in sorted(wanted):
-        if os.path.exists(os.path.join(imgdir, w)):
-            continue
-        stem = os.path.splitext(os.path.basename(w))[0].lower()
-        cands = have.get(stem)
-        if not cands:
-            continue
-        # the same folder, else Common, else any
-        wdir = os.path.dirname(w).lower()
-        cands = sorted(cands, key=lambda c: (os.path.dirname(c).lower() != wdir,
-                                             not c.startswith('Common'), c))
-        im = Image.open(os.path.join(imgdir, cands[0])).convert('RGBA')
-        out = os.path.join(imgdir, w)
-        os.makedirs(os.path.dirname(out), exist_ok=True)
-        im.save(out, 'BMP' if w.endswith('.bmp') else 'PNG')
-        made += 1
-    print('rocommon: %d of %d wanted images added' % (made, len(wanted)))
-    mksquash(dst, os.path.join(OUT, 'rocommon.img'), {})
-
+    shutil.copyfile(os.path.join(TOP, 'dec/rocommon_d8000.img'), os.path.join(OUT, 'rocommon.img'))
 
 def build_nand():
     lk = bytearray(open(LK, 'rb').read())

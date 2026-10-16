@@ -32,6 +32,7 @@ void hd2_ipc_clean(void);
 void hd2_fb_init(void);
 void hd2_crypto_selftest(void);
 void hd2_micom_start(int master);
+void hd2_debug_uart_start(int master);
 const char *hd2_image_path(const char *path, char *buf, size_t n);
 uint64_t hd2tv_va2phys(const void *va);
 int hd2tv_phys_fd(void);

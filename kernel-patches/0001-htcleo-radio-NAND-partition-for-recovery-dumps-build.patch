@@ -1,0 +1,88 @@
+From 0e378a1b2f9383aef06b799ac74e121519d1fce9 Mon Sep 17 00:00:00 2001
+From: davig998 <davimarchesiprimo@gmail.com>
+Date: Mon, 12 Oct 2026 10:12:52 -0300
+Subject: [PATCH 1/3] htcleo: radio NAND partition for recovery dumps; build
+ fixes
+
+- MTD_HTCLEO_NAND_RADIO: read-only "hd2radio" partition over the
+  protected NAND blocks 0-0x211 (radio, APPSBL, factory data), used by
+  the recovery's hd2nanddump
+- kernel/timeconst.pl: "defined(@array)" is gone from current Perl
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/mtd/devices/Kconfig       | 10 ++++++++++
+ drivers/mtd/devices/htcleo_nand.c | 15 +++++++++++++++
+ kernel/timeconst.pl               |  2 +-
+ 3 files changed, 26 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/mtd/devices/Kconfig b/drivers/mtd/devices/Kconfig
+index af4d80b4..94bc1f79 100644
+--- a/drivers/mtd/devices/Kconfig
++++ b/drivers/mtd/devices/Kconfig
+@@ -67,6 +67,16 @@ config MTD_HTCLEO_NAND
+ 	help
+ 	  Support for some NAND chips connected to the HTC LEO NAND controller.
+ 
++config MTD_HTCLEO_NAND_RADIO
++	bool "Read-only MTD partition over the HD2 radio area"
++	depends on MTD_HTCLEO_NAND && MTD_PARTITIONS
++	default n
++	help
++	  Adds a read-only partition "hd2radio" covering NAND blocks 0 to
++	  0x211, everything below the ROM area: the radio (MIBIB, boot
++	  loaders, AMSS, EFS2, DSP), APPSBL and the factory data blocks.
++	  For backups with nanddump; the driver refuses writes there anyway.
++
+ config MTD_DATAFLASH
+ 	tristate "Support for AT45xxx DataFlash"
+ 	depends on SPI_MASTER && EXPERIMENTAL
+diff --git a/drivers/mtd/devices/htcleo_nand.c b/drivers/mtd/devices/htcleo_nand.c
+index 12a9b390..5c05ccc2 100755
+--- a/drivers/mtd/devices/htcleo_nand.c
++++ b/drivers/mtd/devices/htcleo_nand.c
+@@ -132,6 +132,15 @@ static struct nand_ecclayout msm_nand_oob_64 =
+ 
+ #define NUM_PROTECTED_BLOCKS (0x212)
+ 
++#ifdef CONFIG_MTD_HTCLEO_NAND_RADIO
++/* blocks 0..NUM_PROTECTED_BLOCKS-1, read only (see Kconfig) */
++static struct mtd_partition htcleo_radio_part = {
++	.name		= "hd2radio",
++	.offset		= 0,
++	.mask_flags	= MTD_WRITEABLE,
++};
++#endif
++
+ struct flash_identification {
+ 	uint32_t flash_id;
+ 	uint32_t mask;
+@@ -2171,6 +2180,12 @@ static int __devinit msm_nand_probe(struct platform_device *pdev)
+ #endif
+ 		err = add_mtd_device(&info->mtd);
+ 
++#ifdef CONFIG_MTD_HTCLEO_NAND_RADIO
++	/* after the bootloader's partitions, so their mtd numbers stay put */
++	htcleo_radio_part.size = NUM_PROTECTED_BLOCKS * info->mtd.erasesize;
++	add_mtd_partitions(&info->mtd, &htcleo_radio_part, 1);
++#endif
++
+ 	dev_set_drvdata(&pdev->dev, info);
+ 
+ 	return 0;
+diff --git a/kernel/timeconst.pl b/kernel/timeconst.pl
+index eb51d76e..04612394 100644
+--- a/kernel/timeconst.pl
++++ b/kernel/timeconst.pl
+@@ -370,7 +370,7 @@ if ($hz eq '--can') {
+ 	}
+ 
+ 	@val = @{$canned_values{$hz}};
+-	if (!defined(@val)) {
++	if (!@val) {
+ 		@val = compute_values($hz);
+ 	}
+ 	output($hz, @val);
+-- 
+2.55.0
+

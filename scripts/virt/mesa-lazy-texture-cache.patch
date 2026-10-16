@@ -1,0 +1,96 @@
+--- a/src/gallium/drivers/softpipe/sp_tex_tile_cache.c
++++ b/src/gallium/drivers/softpipe/sp_tex_tile_cache.c
+@@ -47,7 +47,6 @@
+ sp_create_tex_tile_cache( struct pipe_context *pipe )
+ {
+    struct softpipe_tex_tile_cache *tc;
+-   uint pos;
+ 
+    /* make sure max texture size works */
+    assert((TEX_TILE_SIZE << TEX_Y_BITS) >= (1 << (SP_MAX_TEXTURE_2D_LEVELS-1)));
+@@ -55,10 +54,7 @@
+    tc = CALLOC_STRUCT( softpipe_tex_tile_cache );
+    if (tc) {
+       tc->pipe = pipe;
+-      for (pos = 0; pos < ARRAY_SIZE(tc->entries); pos++) {
+-         tc->entries[pos].addr.bits.invalid = 1;
+-      }
+-      tc->last_tile = &tc->entries[0]; /* any tile */
++      /* Keep unused sampler slots small. Storage is allocated on lookup. */
+    }
+    return tc;
+ }
+@@ -68,11 +64,7 @@
+ sp_destroy_tex_tile_cache(struct softpipe_tex_tile_cache *tc)
+ {
+    if (tc) {
+-      uint pos;
+-
+-      for (pos = 0; pos < ARRAY_SIZE(tc->entries); pos++) {
+-         /*assert(tc->entries[pos].x < 0);*/
+-      }
++      FREE(tc->entries);
+       if (tc->transfer) {
+          tc->pipe->texture_unmap(tc->pipe, tc->transfer);
+       }
+@@ -97,7 +89,7 @@
+    assert(tc);
+    assert(tc->texture);
+ 
+-   for (i = 0; i < ARRAY_SIZE(tc->entries); i++) {
++   for (i = 0; tc->entries && i < NUM_TEX_TILE_ENTRIES; i++) {
+       tc->entries[i].addr.bits.invalid = 1;
+    }
+ }
+@@ -147,7 +139,7 @@
+ 
+       /* mark as entries as invalid/empty */
+       /* XXX we should try to avoid this when the teximage hasn't changed */
+-      for (i = 0; i < ARRAY_SIZE(tc->entries); i++) {
++      for (i = 0; tc->entries && i < NUM_TEX_TILE_ENTRIES; i++) {
+          tc->entries[i].addr.bits.invalid = 1;
+       }
+ 
+@@ -169,7 +161,7 @@
+ 
+    if (tc->texture) {
+       /* caching a texture, mark all entries as empty */
+-      for (pos = 0; pos < ARRAY_SIZE(tc->entries); pos++) {
++      for (pos = 0; tc->entries && pos < NUM_TEX_TILE_ENTRIES; pos++) {
+          tc->entries[pos].addr.bits.invalid = 1;
+       }
+       tc->tex_z = -1;
+@@ -206,6 +198,13 @@
+ {
+    struct softpipe_tex_cached_tile *tile;
+ 
++   if (!tc->entries) {
++      tc->entries = CALLOC(NUM_TEX_TILE_ENTRIES, sizeof(*tc->entries));
++      if (!tc->entries)
++         abort(); /* no texture result can be returned after allocation failure */
++      for (unsigned i = 0; i < NUM_TEX_TILE_ENTRIES; i++)
++         tc->entries[i].addr.bits.invalid = 1;
++   }
+    tile = tc->entries + tex_cache_pos( addr );
+ 
+    if (addr.value != tile->addr.value) {
+--- a/src/gallium/drivers/softpipe/sp_tex_tile_cache.h
++++ b/src/gallium/drivers/softpipe/sp_tex_tile_cache.h
+@@ -88,7 +88,7 @@
+    struct pipe_resource *texture;  /**< if caching a texture */
+    unsigned timestamp;
+ 
+-   struct softpipe_tex_cached_tile entries[NUM_TEX_TILE_ENTRIES];
++   struct softpipe_tex_cached_tile *entries; /* allocated on first texture lookup */
+ 
+    struct pipe_transfer *tex_trans;
+    void *tex_trans_map;
+@@ -150,7 +150,7 @@
+ sp_get_cached_tile_tex(struct softpipe_tex_tile_cache *tc, 
+                        union tex_tile_address addr )
+ {
+-   if (tc->last_tile->addr.value == addr.value)
++   if (tc->last_tile && tc->last_tile->addr.value == addr.value)
+       return tc->last_tile;
+ 
+    return sp_find_cached_tile_tex( tc, addr );

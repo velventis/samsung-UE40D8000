@@ -84,12 +84,19 @@ static int key_code(const char *s)
     return end != s && !*end && v < 256 ? (int)v : -1;
 }
 
+/* A FIFO line represents a distinct press, not an IR repeat. The firmware
+ * consumes this exported one-shot flag in KeyCommon::t_OkayToSend. Without
+ * it, legacy RC packets reject Menu/Smart Hub as repeats (reason #4).
+ * Resolve the symbol rather than depending on a firmware memory address. */
+static volatile bool *key_stopped;
+
 static void send_key(int master, int k, const char *what)
 {
     uint8_t p[9] = { 0xff, 0xff, 0x10, k, 0, 0, 0, 0, 0x10 + k };
 
     if (hd2tv_log_mask & 8)
         hd2tv_log("micom: remote key %s (0x%02x)", what, k);
+    if (key_stopped) *key_stopped = true;
     syscall(4, master, p, 9);
 }
 
@@ -213,8 +220,30 @@ static void *rckey_thread(void *arg)
 void hd2_micom_start(int master)
 {
     pthread_t t;
+    key_stopped = dlsym(RTLD_DEFAULT, "_ZN9KeyCommon11bKeyStoppedE");
+    if (!key_stopped)
+        hd2tv_log("micom: no KeyCommon::bKeyStopped; fresh-key filtering unavailable");
 
     pthread_create(&t, 0, micom_thread, (void *)(intptr_t)master);
     pthread_create(&t, 0, rckey_thread, (void *)(intptr_t)master);
     pthread_create(&t, 0, keypad_thread, (void *)(intptr_t)master);
+}
+
+
+/* Keep firmware debug UARTs separate from the guest control console.
+ * Drain output so a full PTY buffer cannot block a firmware thread. */
+static void *debug_uart_thread(void *arg)
+{
+    int fd = (int)(intptr_t)arg;
+    char data[1024];
+    for (;;) {
+        if (syscall(3, fd, data, sizeof(data)) <= 0) sleep(1);
+    }
+    return 0;
+}
+
+void hd2_debug_uart_start(int master)
+{
+    pthread_t t;
+    pthread_create(&t, 0, debug_uart_thread, (void *)(intptr_t)master);
 }

@@ -1,10 +1,10 @@
 /*
- * hd2gl: exeDSP's GL on the HD2's Adreno 200.
+ * tvgl: exeDSP's GL on Linux/Mesa EGL and GLES2.
  *
- * An Android (bionic) program on the HD2 ROM's EGL/GLES2, run by the
- * shim (gl.c) in the /hd2/android chroot:
+ * A Linux/Mesa GLES2 renderer, run by the shim in its own runtime
+ * root so modern libraries remain separate from the TV's glibc:
  *
- *   hd2gl CMD_FD REPLY_FD BUF_FD PHYS_FD
+ *   tvgl CMD_FD REPLY_FD BUF_FD PHYS_FD (or tvgl --selftest)
  *
  * It runs the command batches the shim sends (glproto.h).  The TV's pixmap
  * surfaces are textures behind framebuffer objects: what is drawn is
@@ -16,9 +16,16 @@
  *
  * The TV's shader programs are Mali binaries: they run here as GLSL.
  */
+#ifndef _FILE_OFFSET_BITS
+#define _FILE_OFFSET_BITS 64
+#endif
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <malloc.h>
+#include <ucontext.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -51,7 +58,24 @@ static void hlog(const char *fmt, ...)
     if (n > (int)sizeof(b) - 2)
         n = sizeof(b) - 2;
     b[n++] = '\n';
-    write(2, b, n);
+    ssize_t ignored = write(2, b, n);
+    (void)ignored;
+}
+
+static volatile sig_atomic_t last_op, last_fn;
+static void renderer_crash(int sig, siginfo_t *si, void *context)
+{
+    ucontext_t *uc = context;
+    hlog("fatal signal %d at protocol op %d, function %d; pc=%lx lr=%lx address=%p",
+         sig, last_op, last_fn, uc->uc_mcontext.arm_pc, uc->uc_mcontext.arm_lr, si->si_addr);
+    int fd = open("/proc/self/maps", O_RDONLY);
+    char maps[4096];
+    ssize_t n;
+    while (fd >= 0 && (n = read(fd, maps, sizeof(maps))) > 0) {
+        ssize_t ignored = write(2, maps, n); (void)ignored;
+    }
+    if (fd >= 0) close(fd);
+    _exit(128 + sig);
 }
 
 /* ------------------------------------------------------- the TV's memory */
@@ -62,8 +86,8 @@ static int phys_map(uint32_t pa, uint32_t len, struct pmap *m)
 {
     uint32_t a = pa & ~0xfffu;
     m->len = (pa - a) + len;
-    m->base = (uint8_t *)syscall(__NR_mmap2, 0, m->len, PROT_READ | PROT_WRITE,
-                                 MAP_SHARED, phys_fd, a >> 12);
+    m->base = mmap(0, m->len, PROT_READ | PROT_WRITE,
+                   MAP_SHARED, phys_fd, (off_t)(uint64_t)a);
     if (m->base == MAP_FAILED || !m->base) {
         hlog("cannot map %08x+%x: %d", pa, len, errno);
         return -1;
@@ -233,8 +257,13 @@ static void link_program(uint32_t id)
     if (p->real)
         glDeleteProgram(p->real);
     p->real = glCreateProgram();
-    glAttachShader(p->real, compile(GL_VERTEX_SHADER, is3d ? vs3d : vs2d));
-    glAttachShader(p->real, compile(GL_FRAGMENT_SHADER, is3d ? fs3d : fs2d));
+    GLuint vs = compile(GL_VERTEX_SHADER, is3d ? vs3d : vs2d);
+    GLuint fs = compile(GL_FRAGMENT_SHADER, is3d ? fs3d : fs2d);
+    glAttachShader(p->real, vs);
+    glAttachShader(p->real, fs);
+    /* The program retains these until it is deleted. */
+    glDeleteShader(vs);
+    glDeleteShader(fs);
     for (int i = 0; i < MAXATTR; i++)
         if (p->attr[i][0])
             glBindAttribLocation(p->real, i, p->attr[i]);
@@ -479,6 +508,8 @@ static void write_back(void)
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         int w = s->dx1 - s->dx0, h = s->dy1 - s->dy0;
         uint32_t *tmp = malloc((size_t)w * h * 4);
+        if (debug) hlog("readback surface %d: rect %d,%d %dx%d, surface %ux%u stride %u, buffer %p",
+                         i, s->dx0, s->dy0, w, h, s->w, s->h, s->stride, (void *)tmp);
         glReadPixels(s->dx0, s->dy0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, tmp);
         struct pmap m;
         if (!phys_map(s->phys, s->stride * s->h, &m)) {
@@ -598,6 +629,8 @@ static void gl_call(const uint32_t *a)
     }
     case F_CreateProgram:
         if (a[1] < GLP_MAXOBJ) {
+            if (progs[a[1]] && progs[a[1]]->real)
+                glDeleteProgram(progs[a[1]]->real);
             free(progs[a[1]]);
             progs[a[1]] = calloc(1, sizeof(struct prog));
         }
@@ -703,6 +736,60 @@ static void attrib(const uint32_t *a)
     glBindBuffer(GL_ARRAY_BUFFER, real_buf(c->array_buf));
 }
 
+/* FBO names belong to their creating context; textures/depth are shared. */
+static void destroy_surface(uint32_t id)
+{
+    struct surf *s = id < GLP_MAXOBJ ? surfs[id] : 0;
+    if (!s) return;
+    EGLContext saved = eglGetCurrentContext();
+    for (int i = 0; i < GLP_MAXCTX; i++) {
+        if (s->fbo[i] && ctxs[i].real &&
+            eglMakeCurrent(dpy, pbuf, pbuf, ctxs[i].real))
+            glDeleteFramebuffers(1, &s->fbo[i]);
+        if (ctxs[i].surf == id) ctxs[i].surf = 0;
+    }
+    if (eglMakeCurrent(dpy, pbuf, pbuf, root)) {
+        glDeleteTextures(1, &s->tex);
+        glDeleteRenderbuffers(1, &s->depth);
+    }
+    free(s);
+    surfs[id] = 0;
+    eglMakeCurrent(dpy, saved ? pbuf : EGL_NO_SURFACE,
+                   saved ? pbuf : EGL_NO_SURFACE, saved);
+    if (cur >= 0) bind_fb();
+}
+
+static void destroy_context(uint32_t id)
+{
+    if (!id || id >= GLP_MAXCTX || !ctxs[id].real) return;
+    if (cur == (int)id) {
+        eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        cur = -1;
+    }
+    eglDestroyContext(dpy, ctxs[id].real);
+    for (int i = 0; i < MAXATTR; i++) free(ctxs[id].scratch[i]);
+    memset(&ctxs[id], 0, sizeof(ctxs[id]));
+    memset(fb_r[id], 0, sizeof(fb_r[id]));
+    for (int i = 0; i < GLP_MAXOBJ; i++)
+        if (surfs[i]) surfs[i]->fbo[id] = 0;
+}
+
+static void memory_stats(void)
+{
+    static time_t last;
+    time_t now = time(0);
+    if (now - last < 10) return;
+    last = now;
+    unsigned ns = 0, nt = 0, nc = 0;
+    for (int i = 0; i < GLP_MAXOBJ; i++) {
+        ns += surfs[i] != 0; nt += tex_r[i] != 0;
+    }
+    for (int i = 0; i < GLP_MAXCTX; i++) nc += ctxs[i].real != 0;
+    struct mallinfo2 m = mallinfo2();
+    hlog("memory: heap-used=%zuKiB heap-free=%zuKiB mmap=%zuKiB surfaces=%u textures=%u contexts=%u",
+         m.uordblks / 1024, m.fordblks / 1024, m.hblkhd / 1024, ns, nt, nc);
+}
+
 static void run(uint32_t n)
 {
     uint32_t off = 0;
@@ -713,6 +800,12 @@ static void run(uint32_t n)
         const uint32_t *a = h + 2;
         uint32_t op = h[0];
 
+        if (h[1] > (n - off - 8) / 4) {
+            hlog("invalid command length at %u", off);
+            return;
+        }
+        last_op = op;
+        last_fn = op == GLP_CALL && h[1] ? a[0] : 0;
         off += 8 + 4 * h[1];
         if (cur < 0 && op >= GLP_CALL) {
             continue;                   /* GL without a context */
@@ -721,6 +814,7 @@ static void run(uint32_t n)
         case GLP_CTX_CREATE: {
             static const EGLint attr[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
             if (a[0] < GLP_MAXCTX) {
+                destroy_context(a[0]);
                 memset(&ctxs[a[0]], 0, sizeof(ctxs[0]));
                 ctxs[a[0]].real = eglCreateContext(dpy, cfg, root, attr);
                 if (!ctxs[a[0]].real)
@@ -729,20 +823,14 @@ static void run(uint32_t n)
             break;
         }
         case GLP_CTX_DESTROY:
-            if (a[0] < GLP_MAXCTX && ctxs[a[0]].real) {
-                if (cur == (int)a[0]) {
-                    eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-                    cur = -1;
-                }
-                eglDestroyContext(dpy, ctxs[a[0]].real);
-                ctxs[a[0]].real = 0;
-            }
+            destroy_context(a[0]);
             break;
         case GLP_SURF_PIXMAP: {
             struct surf *s;
             int made = cur < 0;
             if (a[0] >= GLP_MAXOBJ)
                 break;
+            destroy_surface(a[0]);
             if (made)
                 eglMakeCurrent(dpy, pbuf, pbuf, root);
             s = calloc(1, sizeof(*s));
@@ -770,14 +858,7 @@ static void run(uint32_t n)
             break;
         }
         case GLP_SURF_DESTROY:
-            if (a[0] < GLP_MAXOBJ && surfs[a[0]]) {
-                /* its texture stays: GL objects need a context to go */
-                free(surfs[a[0]]);
-                surfs[a[0]] = 0;
-                for (int i = 0; i < GLP_MAXCTX; i++)
-                    if (ctxs[i].surf == a[0])
-                        ctxs[i].surf = 0;
-            }
+            destroy_surface(a[0]);
             break;
         case GLP_MAKE_CURRENT:
             if (!a[0] || a[0] >= GLP_MAXCTX || !ctxs[a[0]].real) {
@@ -900,9 +981,19 @@ int main(int argc, char **argv)
     EGLint n, maj, min;
     uint32_t len, r;
 
-    if (argc != 5)
+    struct sigaction crash_action = {0};
+    crash_action.sa_sigaction = renderer_crash;
+    crash_action.sa_flags = SA_SIGINFO | SA_RESETHAND;
+    sigemptyset(&crash_action.sa_mask);
+    sigaction(SIGSEGV, &crash_action, 0);
+    sigaction(SIGBUS, &crash_action, 0);
+    bool selftest = argc == 2 && !strcmp(argv[1], "--selftest");
+    if (!selftest && argc != 5) {
+        hlog("usage: tvgl CMD_FD REPLY_FD BUF_FD PHYS_FD | --selftest");
         return 1;
-    debug = getenv("HD2GL_DEBUG") != 0;
+    }
+    debug = getenv("HD2GL_DEBUG") && strcmp(getenv("HD2GL_DEBUG"), "0");
+    if (!selftest) {
     cmd_fd = atoi(argv[1]);
     rep_fd = atoi(argv[2]);
     phys_fd = atoi(argv[4]);
@@ -912,6 +1003,16 @@ int main(int argc, char **argv)
         hlog("no command buffer");
         return 1;
     }
+    }
+    if (!eglBindAPI(EGL_OPENGL_ES_API)) {
+        hlog("cannot select GLES API: %x", eglGetError());
+        return 1;
+    }
+    /* Softpipe is the conservative ARM32 baseline. llvmpipe/virgl remain
+     * selectable through GALLIUM_DRIVER and LIBGL_ALWAYS_SOFTWARE. */
+    const char *software = getenv("LIBGL_ALWAYS_SOFTWARE");
+    if (!getenv("GALLIUM_DRIVER") && software && strcmp(software, "0"))
+        setenv("GALLIUM_DRIVER", "softpipe", 0);
     dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (!eglInitialize(dpy, &maj, &min) || !eglChooseConfig(dpy, ca, &cfg, 1, &n) || !n ||
         !(pbuf = eglCreatePbufferSurface(dpy, cfg, pa)) ||
@@ -921,6 +1022,64 @@ int main(int argc, char **argv)
         return 1;
     }
     hlog("%s, %s", glGetString(GL_RENDERER), glGetString(GL_VERSION));
+    if (selftest) {
+        const char *vs[] = { vs2d, vs3d }, *fs[] = { fs2d, fs3d };
+        for (int i = 0; i < 2; i++) {
+            GLuint v = compile(GL_VERTEX_SHADER, vs[i]);
+            GLuint f = compile(GL_FRAGMENT_SHADER, fs[i]);
+            GLint ok = 0;
+            glGetShaderiv(v, GL_COMPILE_STATUS, &ok);
+            if (!ok) return 2;
+            glGetShaderiv(f, GL_COMPILE_STATUS, &ok);
+            if (!ok) return 2;
+            GLuint p = glCreateProgram();
+            glAttachShader(p, v); glAttachShader(p, f); glLinkProgram(p);
+            glGetProgramiv(p, GL_LINK_STATUS, &ok);
+            if (!ok) { hlog("selftest: shader link failed"); return 2; }
+            if (i == 0) {
+                const GLfloat vertices[] = {0,-2,0,1, 2,-2,0,1, 0,0,0,1, 2,0,0,1};
+                const GLfloat uv[] = {0,0, 1,0, 0,1, 1,1};
+                const GLubyte texel[] = {64,128,191,255};
+                GLubyte pixel[4] = {0};
+                GLuint tex;
+                glGenTextures(1, &tex); glBindTexture(GL_TEXTURE_2D, tex);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, texel);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                glUseProgram(p);
+                glUniform1i(glGetUniformLocation(p, "texture"), 0);
+                glUniform1f(glGetUniformLocation(p, "alphaConstant"), 1.0f);
+                GLint vertex = glGetAttribLocation(p, "inVertex");
+                GLint coord = glGetAttribLocation(p, "inTexCoord");
+                glEnableVertexAttribArray(vertex); glEnableVertexAttribArray(coord);
+                glVertexAttribPointer(vertex, 4, GL_FLOAT, GL_FALSE, 0, vertices);
+                glVertexAttribPointer(coord, 2, GL_FLOAT, GL_FALSE, 0, uv);
+                glViewport(0, 0, 16, 16);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+                if (glGetError() || memcmp(pixel, texel, 4)) {
+                    hlog("selftest: textured draw mismatch %u %u %u %u", pixel[0], pixel[1], pixel[2], pixel[3]);
+                    return 2;
+                }
+                glDisableVertexAttribArray(vertex); glDisableVertexAttribArray(coord);
+                glUseProgram(0); glDeleteTextures(1, &tex);
+            }
+            glDeleteProgram(p); glDeleteShader(v); glDeleteShader(f);
+        }
+        uint8_t pixel[4] = {0};
+        glClearColor(0.25f, 0.5f, 0.75f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glReadPixels(1, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+        if (glGetError() || abs(pixel[0] - 64) > 1 || abs(pixel[1] - 128) > 1 ||
+            abs(pixel[2] - 191) > 1 || pixel[3] != 255) {
+            hlog("selftest: readback mismatch %u %u %u %u", pixel[0], pixel[1], pixel[2], pixel[3]);
+            return 2;
+        }
+        hlog("selftest passed: GLES2, both shader pairs, textured draw and RGBA readback");
+        eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        eglDestroyContext(dpy, root); eglDestroySurface(dpy, pbuf); eglTerminate(dpy);
+        return 0;
+    }
     eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     for (;;) {
         if (read(cmd_fd, &len, 4) != 4)
@@ -928,6 +1087,7 @@ int main(int argc, char **argv)
         if (len > GLP_CMD_SIZE)
             len = 0;
         run(len);
+        memory_stats();
         r = 0;
         if (write(rep_fd, &r, 4) != 4)
             return 0;

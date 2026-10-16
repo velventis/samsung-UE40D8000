@@ -1,7 +1,6 @@
 /*
- * The TV's GL on the HD2's Adreno 200: the protocol between the shim's
- * client (gl.c, in exeDSP) and hd2gl (an Android process on the ROM's
- * EGL/GLES2, in the /hd2/android chroot).
+ * The TV's GL command protocol between the shim's client (gl.c, in
+ * exeDSP) and tvgl (a Linux/Mesa renderer in a separate runtime root).
  *
  * The client appends commands to a shared buffer and, at a sync point,
  * writes the number of bytes to the command pipe; hd2gl runs them all and
@@ -19,7 +18,7 @@
 #define GLP_CMD_SIZE    (24u << 20)     /* the command buffer */
 #define GLP_REPLY_SIZE  (8u << 20)      /* the reply area, after it */
 #define GLP_MAXOBJ      4096
-#define GLP_MAXCTX      16
+#define GLP_MAXCTX      64
 
 enum glp_op {
     /* EGL and the TV's memory */

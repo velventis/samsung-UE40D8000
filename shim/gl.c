@@ -1,18 +1,10 @@
 /*
- * EGL and OpenGL ES 2.0 for exeDSP, drawn by the HD2's Adreno 200.
- *
- * exeDSP's UI (Shadow::GLRenderer, CCGfx, CCPanel) draws with GLES2 into
- * EGL pixmap surfaces over its screen buffers (Mali fbdev_pixmaps: ARGB8888
- * words in the TV's GA memory), with GA surfaces as textures through
- * EGLImages.  These calls are passed to hd2gl, an Android process on the
- * HD2 ROM's Adreno driver (see glproto.h and hd2gl/hd2gl.c), which runs
- * them and writes what was drawn back into the TV's memory.
- *
- * Here: the client side.  Object names are allocated locally, state that
- * GL queries return is kept locally, and calls are batched until a sync
- * point: glFinish/glFlush, eglWaitGL, eglMakeCurrent, eglSwapBuffers, a
- * read-back, or a GA operation (gfx.c calls hd2tv_gl_sync first and
- * reports what it wrote with hd2tv_gl_dirty).
+ * Samsung EGL/GLES2 compatibility client for exeDSP.
+ * Mali fbdev pixmaps and known binary shaders are translated to the command
+ * protocol consumed by a separate Linux/Mesa process (hd2gl/hd2gl.c).
+ * HD2TV_GL_ROOT chooses its runtime root; HD2TV_GL_RENDERER its executable.
+ * HD2TV_GL_SOFTWARE defaults to 1; 0 permits a Mesa hardware backend.
+ * Calls are batched until synchronization, readback, or a CPU GA operation.
  */
 #include "hd2tv.h"
 #include "glproto.h"
@@ -56,7 +48,7 @@ static uint32_t pos;                    /* bytes queued */
 static int cmd_w = -1, rep_r = -1;
 static bool started, failed;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-static uint32_t sent_ctx = ~0u, sent_surf = ~0u;    /* hd2gl's current */
+static uint32_t sent_ctx = ~0u, sent_surf = ~0u;    /* the renderer's current */
 
 static long sys(long n, long a, long b, long c) { return syscall(n, a, b, c); }
 #define SYS_read 3
@@ -70,7 +62,14 @@ static long sys(long n, long a, long b, long c) { return syscall(n, a, b, c); }
 
 static bool start(void)
 {
-    static const char *const paths[] = { "/hd2gl", "/system/bin/hd2gl" };
+    const char *root = getenv("HD2TV_GL_ROOT");
+    const char *renderer = getenv("HD2TV_GL_RENDERER");
+    const char *software = getenv("HD2TV_GL_SOFTWARE");
+    const char *driver = getenv("HD2TV_GL_DRIVER");
+    char driver_env[96];
+    if (driver) snprintf(driver_env, sizeof(driver_env), "GALLIUM_DRIVER=%s", driver);
+    if (!root) root = "/mtd_exe/linux";
+    if (!renderer) renderer = "/usr/bin/tvgl";
     int bfd, cp[2], rp[2], pfd = hd2tv_phys_fd();
     char a1[12], a2[12], a3[12], a4[12];
 
@@ -94,20 +93,22 @@ static bool start(void)
     snprintf(a2, sizeof(a2), "%d", rp[1]);
     snprintf(a3, sizeof(a3), "%d", bfd);
     snprintf(a4, sizeof(a4), "%d", pfd);
-    char *env[] = { "LD_LIBRARY_PATH=/system/lib/egl:/system/lib",
-                    "ANDROID_ROOT=/system", "ANDROID_DATA=/data",
-                    hd2tv_log_mask & 0x800 ? "HD2GL_DEBUG=1" : 0, 0 };
+    char *env[] = { "PATH=/usr/bin:/bin", "EGL_PLATFORM=surfaceless",
+                    software && !strcmp(software, "0") ?
+                        "LIBGL_ALWAYS_SOFTWARE=0" : "LIBGL_ALWAYS_SOFTWARE=1",
+                    "MESA_SHADER_CACHE_DISABLE=true", "LP_NUM_THREADS=2",
+                    hd2tv_log_mask & 0x800 ? "HD2GL_DEBUG=1" : "HD2GL_DEBUG=0",
+                    driver ? driver_env : 0, 0 };
     long pid = fork();
     if (pid == 0) {
         /* only hd2gl's own ends: it sees the shim go when the pipe closes */
         sys(SYS_close, cp[1], 0, 0);
         sys(SYS_close, rp[0], 0, 0);
-        if (sys(SYS_chroot, (long)"/hd2/android", 0, 0) == 0 &&
-            sys(SYS_chdir, (long)"/", 0, 0) == 0)
-            for (int i = 0; i < 2; i++) {
-                char *argv[] = { (char *)paths[i], a1, a2, a3, a4, 0 };
-                sys(SYS_execve, (long)paths[i], (long)argv, (long)env);
-            }
+        if (sys(SYS_chroot, (long)root, 0, 0) == 0 &&
+            sys(SYS_chdir, (long)"/", 0, 0) == 0) {
+            char *argv[] = { (char *)renderer, a1, a2, a3, a4, 0 };
+            sys(SYS_execve, (long)renderer, (long)argv, (long)env);
+        }
         syscall(SYS_exit, 127);
     }
     sys(SYS_close, cp[0], 0, 0);
@@ -121,10 +122,10 @@ static bool start(void)
     /* a first round trip: hd2gl is up and has the GPU */
     uint32_t n = 0, r = 0;
     if (sys(SYS_write, cmd_w, (long)&n, 4) != 4 || sys(SYS_read, rep_r, (long)&r, 4) != 4) {
-        hd2tv_log("gl: hd2gl did not start (is /hd2/android set up?)");
+        hd2tv_log("gl: Linux/Mesa helper did not start (check HD2TV_GL_ROOT and runtime libraries)");
         return false;
     }
-    hd2tv_log("gl: hd2gl %ld up", pid);
+    hd2tv_log("gl: Linux/Mesa renderer %ld up", pid);
     failed = false;
     return true;
 }
@@ -229,7 +230,7 @@ static void call(uint32_t fn, int n, ...)
     va_end(ap);
 }
 
-/* hd2gl's current context and surface: this thread's */
+/* the renderer's current context and surface: this thread's */
 static bool sel(void)
 {
     uint32_t c, s;

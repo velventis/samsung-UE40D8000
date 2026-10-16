@@ -7,7 +7,6 @@ HD2=$HOME/clones/hd2-qemu
 rm -f qmp.sock console.sock ramcon.log qemu.log uart1.log
 ../bin/qemu-tv -M htcleo -drive if=mtd,format=raw,file=${NAND:-../out/nand.img} \
   -drive if=sd,format=raw,file=${SDCARD:-../out/sdcard.img} \
-  -display ${DISPLAY_OPT:-none} \
   -chardev socket,id=con,path=console.sock,server=on,wait=off,logfile=uart1.log \
   -serial chardev:con -serial file:ramcon.log \
   -qmp unix:qmp.sock,server,nowait -d ${QEMU_D:-guest_errors} -D qemu.log \
